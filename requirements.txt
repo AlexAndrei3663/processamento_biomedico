@@ -1,0 +1,58 @@
+# serial_monitor/
+# ├── app/
+# │   ├── bootstrap.py                  # Configuração inicial e injeção de dependências
+# │   ├── settings.py                   # Configurações da aplicação
+# │   └── signals_catalog.py            # Catálogo de sinais e suas especificações
+# ├── domain/
+# │   ├── enums.py                      # Enums para tipos de sinais, métricas, etc.
+# │   ├── models.py                     # Modelos de dados como Session, Signal, Metric, etc.
+# │   ├── session.py                    # Lógica de negócios para sessões  
+# │   └── filter_specs.py               # Especificações de filtros e suas implementações
+# ├── application/
+# │   ├── app_controller.py             # Controlador principal da aplicação
+# │   ├── session_service.py            # Lógica de negócios para gerenciamento de sessões
+# │   ├── live_view_service.py          # Lógica de negócios para visualização em tempo real
+# │   └── storage_service.py            # Lógica de negócios para armazenamento
+# ├── infrastructure/
+# │   ├── serial/
+# │   │   ├── serial_reader.py          # Leitura de dados da porta serial
+# │   │   ├── frame_parser.py           # Análise de quadros de dados
+# │   │   └── protocol.py               # Implementação do protocolo de comunicação
+# │   ├── storage/
+# │   │   ├── session_repository.py     # Repositório para sessões
+# │   │   └── config_repository.py      # Repositório para configurações
+# │   └── logging/
+# │       └── logger.py                 # Configuração de logging
+# ├── processing/
+# │   ├── ring_buffer.py                # Implementação de buffer circular para dados em tempo real
+# │   ├── filter_pipeline.py            # Pipeline de processamento de sinais
+# │   ├── spectrum.py                   # Cálculo de espectro de sinais
+# │   ├── metrics.py                    # Cálculo de métricas como RMS, frequência dominante, etc.
+# │   └── decimator.py                  # Redução da taxa de amostragem para visualização
+# ├── ui/
+# │   ├── main_window.py                # Janela principal da aplicação
+# │   ├── pages/
+# │   │   ├── menu_page.py              # Página de menu principal
+# │   │   ├── config_page.py            # Página de configuração
+# │   │   ├── live_page.py              # Página de visualização em tempo real
+# │   │   └── stored_page.py            # Página de dados armazenados   
+# │   └── widgets/
+# │       ├── signal_tab.py             # Widget para exibição de sinais em abas
+# │       ├── signal_plot_widget.py     # Widget para plotagem de sinais
+# │       ├── metric_card.py            # Widget para exibição de métricas em cartões
+# │       ├── filter_panel.py           # Widget para configuração de filtros
+# │       └── session_list_widget.py    # Widget para exibição de sessões armazenadas
+# tests/
+# ├── test_protocol.py                  # Testes para o protocolo de comunicação
+# ├── test_filters.py                   # Testes para os filtros implementados
+# └── test_metrics.py                   # Testes para o cálculo de métricas
+# main.py                           # Ponto de entrada da aplicação
+
+PyQt5           # GUI - Pode ser substituído pelo PySide6 posteriormente
+pyqtgraph       # Plotagem
+pyserial        # Comunicação serial
+numpy           # Manipulação de arrays e cálculos numéricos
+scipy           # Processamento de sinais e outras funções científicas
+PyYAML          # Configurações em YAML
+h5py            # Leitura e escrita de arquivos HDF5
+pytest          # Testes unitários  

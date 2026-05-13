@@ -1,0 +1,64 @@
+# Bytecode / cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Pytest
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Ferramentas de lint/type-check
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Build / distribuição
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Arquivos de ambiente / segredos
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Arquivos temporários
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# IDEs / editores
+.vscode/
+.idea/
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Jupyter, caso use
+.ipynb_checkpoints/
+
+# Arquivos gerados por empacotadores
+*.spec
+
+# Bancos locais, se forem apenas de desenvolvimento
+*.sqlite
+*.sqlite3
+*.db
