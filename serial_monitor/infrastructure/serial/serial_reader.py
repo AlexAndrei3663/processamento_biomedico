@@ -23,7 +23,7 @@ class SerialReader(QThread):
 
     def stop(self) -> None:
         self._running = False
-        self.wait()
+        self.wait(1500)
 
     def run(self) -> None:
         if self._session is None:
@@ -31,9 +31,9 @@ class SerialReader(QThread):
             return
 
         self._running = True
-        self.connection_changed.emit(True)
         try:
             with serial.Serial(self._session.port, self._session.baudrate, timeout=0.2) as ser:
+                self.connection_changed.emit(True)
                 while self._running:
                     raw_line = ser.readline()
                     if not raw_line:
@@ -45,7 +45,10 @@ class SerialReader(QThread):
                         self.frame_received.emit(parsed.frame)
                     except FrameProtocolError as exc:
                         self.error_occurred.emit(f"Erro de protocolo: {exc}")
+                    except Exception as exc:
+                        self.error_occurred.emit(f"Erro inesperado ao processar linha serial: {exc}")
         except serial.SerialException as exc:
             self.error_occurred.emit(f"Erro serial: {exc}")
         finally:
+            self._running = False
             self.connection_changed.emit(False)
