@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -15,12 +15,15 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from serial_monitor.domain.models import AcquisitionSnapshot, SessionConfig
+from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, SessionConfig
 from serial_monitor.ui.widgets.signal_tab import SignalTab
 
 
 class LivePage(QWidget):
     """Página de visualização ao vivo com abas por canal."""
+
+    filter_toggled = pyqtSignal(int, str, bool)
+    display_mode_changed = pyqtSignal(int, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -93,6 +96,8 @@ class LivePage(QWidget):
 
         for channel in session.channels:
             tab = SignalTab(channel)
+            tab.filter_toggled.connect(self.filter_toggled.emit)
+            tab.display_mode_changed.connect(self.display_mode_changed.emit)
             self.signal_tabs[channel.index] = tab
             self.live_tabs.addTab(tab, f"ch{channel.index} - {channel.display_name}")
 
@@ -100,7 +105,7 @@ class LivePage(QWidget):
         for tab in self.signal_tabs.values():
             tab.clear()
 
-    def update_live_view(self, snapshot: AcquisitionSnapshot) -> None:
+    def update_live_view(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
         if not snapshot.configured:
             return
 
@@ -109,7 +114,7 @@ class LivePage(QWidget):
             if tab is not None:
                 tab.update_from_snapshot(channel_snapshot)
 
-    def update_buffer_summary(self, snapshot: AcquisitionSnapshot) -> None:
+    def update_buffer_summary(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
         if not snapshot.configured:
             self.buffer_summary.setPlainText("Aquisição ainda não configurada.")
             return
@@ -128,8 +133,8 @@ class LivePage(QWidget):
             channel = channel_snapshot.channel
             last_value = (
                 "--"
-                if channel_snapshot.last_value is None
-                else f"{channel_snapshot.last_value:g} {channel.unit}"
+                if channel_snapshot.last_processed_value is None
+                else f"{channel_snapshot.last_processed_value:g} {channel.unit}"
             )
             lines.append(
                 f"  ch{channel.index} | {channel.display_name} ({channel.signal_type.value}) | "

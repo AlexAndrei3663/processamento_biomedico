@@ -4,14 +4,14 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtWidgets import QVBoxLayout, QWidget
 
-from serial_monitor.domain.models import ChannelBufferSnapshot, SignalChannelConfig
+from serial_monitor.domain.models import SignalChannelConfig
 
 
 class SignalPlotWidget(QWidget):
-    """Gráfico temporal de um canal de aquisição.
+    """Gráfico temporal de um canal.
 
-    A atualização recebe snapshots prontos do buffer circular. A classe não
-    conhece serial, parser ou filtros; ela apenas renderiza os dados recebidos.
+    A classe recebe vetores prontos para renderização. Ela não conhece serial,
+    parser, buffers ou filtros.
     """
 
     def __init__(self, channel: SignalChannelConfig) -> None:
@@ -29,17 +29,15 @@ class SignalPlotWidget(QWidget):
         self.curve = self.plot_widget.plot([], [])
         layout.addWidget(self.plot_widget)
 
-    def update_from_snapshot(self, snapshot: ChannelBufferSnapshot) -> None:
-        if snapshot.sample_count == 0:
-            self.curve.setData([], [])
+    def set_series(self, x_seconds: np.ndarray, values: np.ndarray, title_suffix: str = "tempo") -> None:
+        if values.size == 0 or x_seconds.size == 0:
+            self.clear()
+            return
+        if len(x_seconds) != len(values):
             return
 
-        x = snapshot.x_seconds
-        y = snapshot.values
-        if len(x) != len(y):
-            return
-
-        self.curve.setData(x, y)
+        self.plot_widget.setTitle(f"{self.channel.display_name} - {title_suffix}")
+        self.curve.setData(x_seconds, values)
 
     def clear(self) -> None:
         self.curve.setData(np.array([], dtype=float), np.array([], dtype=float))

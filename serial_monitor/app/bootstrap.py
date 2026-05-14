@@ -10,12 +10,13 @@ from serial_monitor.application.live_acquisition_service import LiveAcquisitionS
 from serial_monitor.application.session_service import SessionService
 from serial_monitor.infrastructure.serial.protocol import FrameCsvParser
 from serial_monitor.infrastructure.serial.serial_reader import SerialReader
+from serial_monitor.processing.filter_pipeline import ProcessingService
 from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
-class StageFourController(QObject):
-    """Controlador da navegação final e da aquisição ao vivo."""
+class StageFiveController(QObject):
+    """Controlador da navegação, aquisição e pipeline de processamento."""
 
     def __init__(
         self,
@@ -23,12 +24,14 @@ class StageFourController(QObject):
         session_service: SessionService,
         serial_reader: SerialReader,
         acquisition_service: LiveAcquisitionService,
+        processing_service: ProcessingService,
     ) -> None:
         super().__init__()
         self.window = window
         self.session_service = session_service
         self.serial_reader = serial_reader
         self.acquisition_service = acquisition_service
+        self.processing_service = processing_service
         self.parser = FrameCsvParser()
         self._session = None
         self._last_summary_frame_count = -1
@@ -39,7 +42,7 @@ class StageFourController(QObject):
         self.view_timer.start()
 
         self._connect_signals()
-        self.log("INFO", "Controlador inicializado. Etapa 4: navegação final por páginas.")
+        self.log("INFO", "Controlador inicializado. Etapa 5: filtros e pipeline de processamento.")
 
     def _connect_signals(self) -> None:
         menu = self.window.menu_page
@@ -67,6 +70,8 @@ class StageFourController(QObject):
         live.open_config_button.clicked.connect(self.window.show_config)
         live.open_stored_button.clicked.connect(self.window.show_stored)
         live.back_menu_button.clicked.connect(self.window.show_menu)
+        live.filter_toggled.connect(self.on_filter_toggled)
+        live.display_mode_changed.connect(self.on_display_mode_changed)
 
         stored.back_menu_button.clicked.connect(self.window.show_menu)
         stored.open_config_button.clicked.connect(self.window.show_config)
@@ -121,17 +126,18 @@ class StageFourController(QObject):
                 signal_order_text=self.window.signal_order_text,
             )
             self.acquisition_service.configure(self._session)
+            self.processing_service.configure(self._session)
             self.window.build_signal_tabs(self._session)
             self._last_summary_frame_count = -1
         except ValueError as exc:
             self._session = None
             self.log("ERRO", str(exc))
-            self.window.update_buffer_summary(self.acquisition_service.snapshot())
+            self.refresh_live_view(force=True)
             return False
         except Exception as exc:
             self._session = None
             self.log("ERRO", f"Falha inesperada ao validar sessão: {exc}")
-            self.window.update_buffer_summary(self.acquisition_service.snapshot())
+            self.refresh_live_view(force=True)
             return False
 
         ordered_signals = ", ".join(
@@ -218,14 +224,33 @@ class StageFourController(QObject):
         self.refresh_live_view(force=True)
         self.log("BUFFER", "Buffers multicanais limpos.")
 
+    @pyqtSlot(int, str, bool)
+    def on_filter_toggled(self, channel_index: int, filter_id: str, enabled: bool) -> None:
+        try:
+            self.processing_service.set_filter_enabled(channel_index, filter_id, enabled)
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível alterar filtro: {exc}")
+            return
+
+        state = "ativado" if enabled else "desativado"
+        self.log("FILTRO", f"Canal ch{channel_index}: filtro '{filter_id}' {state}.")
+        self.refresh_live_view(force=True)
+
+    @pyqtSlot(int, str)
+    def on_display_mode_changed(self, channel_index: int, mode: str) -> None:
+        label = "processado" if mode == "processed" else "bruto"
+        self.log("VIEW", f"Canal ch{channel_index}: visualização alterada para sinal {label}.")
+        self.refresh_live_view(force=True)
+
     @pyqtSlot()
     def refresh_live_view(self, force: bool = False) -> None:
-        snapshot = self.acquisition_service.snapshot()
-        self.window.update_live_view(snapshot)
+        raw_snapshot = self.acquisition_service.snapshot()
+        processed_snapshot = self.processing_service.process(raw_snapshot)
+        self.window.update_live_view(processed_snapshot)
 
-        if force or snapshot.frames_received != self._last_summary_frame_count:
-            self.window.update_buffer_summary(snapshot)
-            self._last_summary_frame_count = snapshot.frames_received
+        if force or processed_snapshot.frames_received != self._last_summary_frame_count:
+            self.window.update_buffer_summary(processed_snapshot)
+            self._last_summary_frame_count = processed_snapshot.frames_received
 
     @pyqtSlot(object)
     def on_frame_received(self, frame: SampleFrame) -> None:
@@ -263,11 +288,12 @@ def run() -> int:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    controller = StageFourController(
+    controller = StageFiveController(
         window=window,
         session_service=SessionService(),
         serial_reader=SerialReader(),
         acquisition_service=LiveAcquisitionService(),
+        processing_service=ProcessingService(),
     )
     window.controller = controller  # type: ignore[attr-defined]
 

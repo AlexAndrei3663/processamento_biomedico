@@ -4,7 +4,7 @@ from datetime import datetime
 
 from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
-from serial_monitor.domain.models import AcquisitionSnapshot, SessionConfig
+from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, SessionConfig
 from serial_monitor.ui.pages.config_page import ConfigPage
 from serial_monitor.ui.pages.live_page import LivePage
 from serial_monitor.ui.pages.menu_page import MenuPage
@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Serial Monitor - Etapa 4")
+        self.setWindowTitle("Serial Monitor - Etapa 5")
         self.resize(1260, 820)
 
         self.stack = QStackedWidget()
@@ -78,10 +78,10 @@ class MainWindow(QMainWindow):
     def clear_signal_tabs(self) -> None:
         self.live_page.clear_signal_tabs()
 
-    def update_live_view(self, snapshot: AcquisitionSnapshot) -> None:
+    def update_live_view(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
         self.live_page.update_live_view(snapshot)
 
-    def update_buffer_summary(self, snapshot: AcquisitionSnapshot) -> None:
+    def update_buffer_summary(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
         self.live_page.update_buffer_summary(snapshot)
 
     def update_connection_state(self, connected: bool) -> None:

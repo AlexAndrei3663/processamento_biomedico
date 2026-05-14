@@ -96,3 +96,39 @@ class AcquisitionSnapshot:
     last_sequence_id: int | None
     last_timestamp_ms: int | None
     channels: Dict[int, ChannelBufferSnapshot]
+
+
+@dataclass(frozen=True, slots=True)
+class MetricSnapshot:
+    mean: float | None = None
+    rms: float | None = None
+    minimum: float | None = None
+    maximum: float | None = None
+
+
+@dataclass(slots=True)
+class ProcessedChannelSnapshot:
+    channel: SignalChannelConfig
+    sample_count: int
+    x_seconds: np.ndarray
+    raw_values: np.ndarray
+    processed_values: np.ndarray
+    timestamps_ms: np.ndarray
+    sequence_ids: np.ndarray
+    last_raw_value: float | None
+    last_processed_value: float | None
+    last_timestamp_ms: int | None
+    active_filters: List[str]
+    filter_status: List[str]
+    metrics: MetricSnapshot
+
+
+@dataclass(slots=True)
+class ProcessedAcquisitionSnapshot:
+    configured: bool
+    running: bool
+    frames_received: int
+    sequence_gaps: int
+    last_sequence_id: int | None
+    last_timestamp_ms: int | None
+    channels: Dict[int, ProcessedChannelSnapshot]
