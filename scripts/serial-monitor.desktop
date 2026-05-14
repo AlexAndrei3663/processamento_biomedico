@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Serial Monitor Biomédico
+Comment=Monitor multissinal com aquisição serial
+Exec=/home/pi/serial_monitor/scripts/run_raspberry.sh
+Terminal=false
+Categories=Science;Education;

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QCloseEvent, QKeyEvent
 from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
+from serial_monitor.app.runtime_settings import RuntimeSettings
 from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, SessionConfig
 from serial_monitor.infrastructure.storage.config_repository import SessionPreset
 from serial_monitor.infrastructure.storage.session_repository import StoredSessionSummary
@@ -14,21 +18,17 @@ from serial_monitor.ui.pages.stored_page import StoredPage
 
 
 class MainWindow(QMainWindow):
-    """Janela principal da Etapa 4.
-
-    A janela passa a ser composta por páginas navegáveis. A lógica de aquisição,
-    parser e buffers permanece fora da UI; esta classe apenas coordena a troca de
-    páginas e expõe métodos de atualização usados pelo controlador.
-    """
+    """Janela principal com navegação por páginas."""
 
     MENU_PAGE = 0
     CONFIG_PAGE = 1
     LIVE_PAGE = 2
     STORED_PAGE = 3
 
-    def __init__(self) -> None:
+    def __init__(self, settings: RuntimeSettings | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("Serial Monitor - Etapa 8")
+        self.settings = settings or RuntimeSettings()
+        self.setWindowTitle("Serial Monitor - Etapa 9")
         self.resize(1260, 820)
 
         self.stack = QStackedWidget()
@@ -36,7 +36,10 @@ class MainWindow(QMainWindow):
 
         self.menu_page = MenuPage()
         self.config_page = ConfigPage()
-        self.live_page = LivePage()
+        self.live_page = LivePage(
+            update_interval_ms=self.settings.update_interval_ms,
+            max_plot_points=self.settings.max_plot_points,
+        )
         self.stored_page = StoredPage()
 
         self.stack.addWidget(self.menu_page)
@@ -63,6 +66,14 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(self.STORED_PAGE)
         self.statusBar().showMessage("Sinais armazenados")
 
+    def toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+            self.statusBar().showMessage("Modo janela")
+        else:
+            self.showFullScreen()
+            self.statusBar().showMessage("Modo tela cheia")
+
     def append_log(self, level: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{timestamp}] [{level}] {message}"
@@ -75,7 +86,7 @@ class MainWindow(QMainWindow):
         self.live_page.log.clear()
 
     def build_signal_tabs(self, session: SessionConfig) -> None:
-        self.live_page.build_signal_tabs(session)
+        self.live_page.build_signal_tabs(session, max_plot_points=self.settings.max_plot_points)
 
     def clear_signal_tabs(self) -> None:
         self.live_page.clear_signal_tabs()
@@ -101,6 +112,21 @@ class MainWindow(QMainWindow):
 
     def apply_preset(self, preset: SessionPreset) -> None:
         self.config_page.apply_preset(preset)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - método Qt
+        if event.key() == Qt.Key_F11:
+            self.toggle_fullscreen()
+            return
+        if event.key() == Qt.Key_Escape and self.isFullScreen():
+            self.showNormal()
+            return
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - método Qt
+        controller: Any = getattr(self, "controller", None)
+        if controller is not None and hasattr(controller, "shutdown"):
+            controller.shutdown()
+        event.accept()
 
     @property
     def selected_preset_name(self) -> str | None:

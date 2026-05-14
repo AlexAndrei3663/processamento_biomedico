@@ -4,8 +4,10 @@ import sys
 from typing import Any
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSlot
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
+from serial_monitor.app.runtime_settings import RuntimeSettings, parse_runtime_settings
+from serial_monitor.app.system_report import collect_system_report
 from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
 from serial_monitor.application.session_service import SessionService
 from serial_monitor.domain.models import AcquisitionSnapshot
@@ -18,8 +20,8 @@ from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
-class StageEightController(QObject):
-    """Controlador da navegação, aquisição, processamento, armazenamento e presets."""
+class StageNineController(QObject):
+    """Controlador da navegação, aquisição, processamento, armazenamento, presets e execução em Raspberry Pi."""
 
     def __init__(
         self,
@@ -30,6 +32,7 @@ class StageEightController(QObject):
         processing_service: ProcessingService,
         session_repository: SessionRepository,
         config_repository: ConfigRepository,
+        settings: RuntimeSettings,
     ) -> None:
         super().__init__()
         self.window = window
@@ -39,20 +42,22 @@ class StageEightController(QObject):
         self.processing_service = processing_service
         self.session_repository = session_repository
         self.config_repository = config_repository
+        self.settings = settings
         self.parser = FrameCsvParser()
         self._session = None
         self._stored_raw_snapshot: AcquisitionSnapshot | None = None
         self._last_summary_frame_count = -1
 
         self.view_timer = QTimer(self)
-        self.view_timer.setInterval(100)
+        self.view_timer.setInterval(self.settings.update_interval_ms)
         self.view_timer.timeout.connect(self.refresh_live_view)
         self.view_timer.start()
 
         self._connect_signals()
         self.refresh_presets()
         self.refresh_stored_sessions()
-        self.log("INFO", "Controlador inicializado. Etapa 8: exportação, presets e robustez.")
+        self.log("INFO", "Controlador inicializado. Etapa 9: preparação para Raspberry Pi e acabamento.")
+        self._log_startup_report()
 
     def _connect_signals(self) -> None:
         menu = self.window.menu_page
@@ -87,6 +92,8 @@ class StageEightController(QObject):
         live.back_menu_button.clicked.connect(self.window.show_menu)
         live.filter_toggled.connect(self.on_filter_toggled)
         live.display_mode_changed.connect(self.on_display_mode_changed)
+        live.update_interval_changed.connect(self.update_view_interval)
+        live.fullscreen_requested.connect(self.window.toggle_fullscreen)
 
         stored.back_menu_button.clicked.connect(self.window.show_menu)
         stored.open_config_button.clicked.connect(self.window.show_config)
@@ -117,6 +124,32 @@ class StageEightController(QObject):
             raise ValueError(f"O campo '{field_name}' deve ser maior que zero.")
         return parsed
 
+    def _log_startup_report(self) -> None:
+        report = collect_system_report()
+        self.log(
+            "SISTEMA",
+            (
+                f"{report.platform} | Python {report.python} | CPUs={report.cpu_count} | "
+                f"update={self.settings.update_interval_ms} ms | max_plot_points={self.settings.max_plot_points} | "
+                f"data_dir={self.settings.data_dir}"
+            ),
+        )
+
+    def _confirm_action(self, title: str, message: str) -> bool:
+        response = QMessageBox.question(
+            self.window,
+            title,
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return response == QMessageBox.Yes
+
+    def shutdown(self) -> None:
+        if self.serial_reader.isRunning():
+            self.serial_reader.stop()
+        self.acquisition_service.stop()
+
     @pyqtSlot()
     def start_monitoring_from_menu(self) -> None:
         if self._session is None:
@@ -137,11 +170,16 @@ class StageEightController(QObject):
 
     @pyqtSlot()
     def close_application(self) -> None:
-        if self.serial_reader.isRunning():
-            self.serial_reader.stop()
+        self.shutdown()
         app = QApplication.instance()
         if app is not None:
             app.quit()
+
+    @pyqtSlot(int)
+    def update_view_interval(self, interval_ms: int) -> None:
+        interval_ms = max(50, min(2000, int(interval_ms)))
+        self.view_timer.setInterval(interval_ms)
+        self.log("PERFORMANCE", f"Intervalo de atualização da GUI ajustado para {interval_ms} ms.")
 
     @pyqtSlot()
     def refresh_presets(self) -> None:
@@ -185,6 +223,12 @@ class StageEightController(QObject):
         name = self.window.selected_preset_name
         if not name:
             self.log("INFO", "Selecione um preset para excluir.")
+            return
+        if not self._confirm_action(
+            "Excluir preset",
+            f"Deseja excluir definitivamente o preset '{name}'?",
+        ):
+            self.log("CONFIG", "Exclusão de preset cancelada pelo usuário.")
             return
         try:
             self.config_repository.delete_preset(name)
@@ -404,6 +448,16 @@ class StageEightController(QObject):
         if session_id is None:
             self.log("INFO", "Selecione uma sessão armazenada para excluir.")
             return
+        if not self._confirm_action(
+            "Excluir sessão armazenada",
+            (
+                "Deseja excluir definitivamente a sessão selecionada?\n\n"
+                f"ID: {session_id}\n\n"
+                "Essa ação remove os arquivos JSON, NPZ e CSV associados."
+            ),
+        ):
+            self.log("STORAGE", "Exclusão de sessão cancelada pelo usuário.")
+            return
         try:
             self.session_repository.delete(session_id)
         except Exception as exc:
@@ -494,19 +548,29 @@ class StageEightController(QObject):
 
 
 def run() -> int:
-    app = QApplication(sys.argv)
-    window = MainWindow()
+    try:
+        settings = parse_runtime_settings(sys.argv[1:])
+    except ValueError as exc:
+        print(f"Erro nos argumentos de execução: {exc}", file=sys.stderr)
+        return 2
 
-    controller = StageEightController(
+    app = QApplication([sys.argv[0]])
+    window = MainWindow(settings)
+
+    controller = StageNineController(
         window=window,
         session_service=SessionService(),
         serial_reader=SerialReader(),
         acquisition_service=LiveAcquisitionService(),
         processing_service=ProcessingService(),
-        session_repository=SessionRepository(),
-        config_repository=ConfigRepository(),
+        session_repository=SessionRepository(settings.sessions_dir),
+        config_repository=ConfigRepository(settings.presets_dir),
+        settings=settings,
     )
     window.controller = controller  # type: ignore[attr-defined]
 
-    window.show()
+    if settings.fullscreen:
+        window.showFullScreen()
+    else:
+        window.show()
     return app.exec_()

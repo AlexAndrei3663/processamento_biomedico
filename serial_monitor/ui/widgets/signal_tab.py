@@ -33,14 +33,14 @@ class SignalTab(QWidget):
     TIME_DOMAIN = "time"
     SPECTRUM_DOMAIN = "spectrum"
 
-    def __init__(self, channel: SignalChannelConfig) -> None:
+    def __init__(self, channel: SignalChannelConfig, max_plot_points: int = 5000) -> None:
         super().__init__()
         self.channel = channel
         self.display_mode = self.RAW_MODE
         self.plot_domain = self.TIME_DOMAIN
         self._last_snapshot: ProcessedChannelSnapshot | None = None
         self.filter_checkboxes: Dict[str, QCheckBox] = {}
-        self.plot = SignalPlotWidget(channel)
+        self.plot = SignalPlotWidget(channel, max_plot_points=max_plot_points)
 
         root = QHBoxLayout(self)
         root.addWidget(self.plot, stretch=4)

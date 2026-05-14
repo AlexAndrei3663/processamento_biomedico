@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QTabWidget,
     QTextEdit,
@@ -24,10 +25,13 @@ class LivePage(QWidget):
 
     filter_toggled = pyqtSignal(int, str, bool)
     display_mode_changed = pyqtSignal(int, str)
+    update_interval_changed = pyqtSignal(int)
+    fullscreen_requested = pyqtSignal()
 
-    def __init__(self) -> None:
+    def __init__(self, update_interval_ms: int = 100, max_plot_points: int = 5000) -> None:
         super().__init__()
         self.signal_tabs: Dict[int, SignalTab] = {}
+        self.max_plot_points = max_plot_points
 
         root = QVBoxLayout(self)
 
@@ -37,10 +41,12 @@ class LivePage(QWidget):
         self.open_config_button = QPushButton("Configurações")
         self.back_menu_button = QPushButton("Menu")
         self.open_stored_button = QPushButton("Sinais armazenados")
+        self.fullscreen_button = QPushButton("Tela cheia / janela")
         header.addWidget(self.title_label)
         header.addStretch(1)
         header.addWidget(self.open_config_button)
         header.addWidget(self.open_stored_button)
+        header.addWidget(self.fullscreen_button)
         header.addWidget(self.back_menu_button)
         root.addLayout(header)
 
@@ -58,6 +64,23 @@ class LivePage(QWidget):
         controls.addStretch(1)
         controls.addWidget(self.clear_log_button)
         root.addLayout(controls)
+
+        performance = QHBoxLayout()
+        self.update_interval_label = QLabel("Intervalo da GUI (ms):")
+        self.update_interval_spinbox = QSpinBox()
+        self.update_interval_spinbox.setRange(50, 2000)
+        self.update_interval_spinbox.setSingleStep(25)
+        self.update_interval_spinbox.setValue(update_interval_ms)
+        self.apply_update_interval_button = QPushButton("Aplicar intervalo")
+        self.performance_hint_label = QLabel(
+            f"Renderização limitada a {max_plot_points} pontos por curva para reduzir carga gráfica."
+        )
+        performance.addWidget(self.update_interval_label)
+        performance.addWidget(self.update_interval_spinbox)
+        performance.addWidget(self.apply_update_interval_button)
+        performance.addStretch(1)
+        performance.addWidget(self.performance_hint_label)
+        root.addLayout(performance)
 
         splitter = QSplitter(Qt.Vertical)
 
@@ -92,12 +115,19 @@ class LivePage(QWidget):
 
         root.addWidget(splitter, stretch=1)
 
-    def build_signal_tabs(self, session: SessionConfig) -> None:
+        self.apply_update_interval_button.clicked.connect(
+            lambda: self.update_interval_changed.emit(self.update_interval_spinbox.value())
+        )
+        self.fullscreen_button.clicked.connect(self.fullscreen_requested.emit)
+
+    def build_signal_tabs(self, session: SessionConfig, max_plot_points: int | None = None) -> None:
+        if max_plot_points is not None:
+            self.max_plot_points = max_plot_points
         self.live_tabs.clear()
         self.signal_tabs.clear()
 
         for channel in session.channels:
-            tab = SignalTab(channel)
+            tab = SignalTab(channel, max_plot_points=self.max_plot_points)
             tab.filter_toggled.connect(self.filter_toggled.emit)
             tab.display_mode_changed.connect(self.display_mode_changed.emit)
             self.signal_tabs[channel.index] = tab

@@ -149,7 +149,8 @@ class ConfigPage(QWidget):
     def refresh_ports(self) -> None:
         ports = list(serial.tools.list_ports.comports())
         current = self.port_input.text().strip()
-        if current:
+        devices = [port.device for port in ports]
+        if not devices:
             return
-        if ports:
-            self.port_input.setText(ports[0].device)
+        if not current or current not in devices:
+            self.port_input.setText(devices[0])
