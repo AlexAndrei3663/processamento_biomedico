@@ -1,9 +1,8 @@
-from .protocol import FrameCsvParser, FrameProtocolError, format_frame_csv
-from .serial_reader import SerialReader
+from .protocol import FrameCsvParser, FrameProtocolError, ParsedFrame, format_frame_csv
 
 __all__ = [
     "FrameCsvParser",
     "FrameProtocolError",
+    "ParsedFrame",
     "format_frame_csv",
-    "SerialReader",
 ]

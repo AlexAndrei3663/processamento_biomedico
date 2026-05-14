@@ -3,31 +3,43 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from PyQt5.QtCore import QObject, pyqtSlot
 from PyQt5.QtWidgets import QApplication
 
+from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
 from serial_monitor.application.session_service import SessionService
-from serial_monitor.infrastructure.serial import SerialReader
 from serial_monitor.infrastructure.serial.protocol import FrameCsvParser
+from serial_monitor.infrastructure.serial.serial_reader import SerialReader
 from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
 
-class StageOneController:
-    def __init__(self, window: MainWindow, session_service: SessionService, serial_reader: SerialReader) -> None:
+class StageTwoController(QObject):
+    def __init__(
+        self,
+        window: MainWindow,
+        session_service: SessionService,
+        serial_reader: SerialReader,
+        acquisition_service: LiveAcquisitionService,
+    ) -> None:
+        super().__init__()
         self.window = window
         self.session_service = session_service
         self.serial_reader = serial_reader
+        self.acquisition_service = acquisition_service
         self.parser = FrameCsvParser()
         self._session = None
         self._connect_signals()
-        self.log("INFO", "Controlador inicializado. Use 'Validar sessão' e depois 'Testar parser'.")
+        self.log("INFO", "Controlador inicializado. Etapa 2: sessão, protocolo e buffers multicanais.")
 
     def _connect_signals(self) -> None:
         self.window.validate_button.clicked.connect(self.validate_session)
         self.window.validate_frame_button.clicked.connect(self.validate_sample_frame)
+        self.window.ingest_frame_button.clicked.connect(self.ingest_sample_frame)
         self.window.connect_button.clicked.connect(self.connect_serial)
         self.window.disconnect_button.clicked.connect(self.disconnect_serial)
+        self.window.clear_buffers_button.clicked.connect(self.clear_buffers)
         self.window.clear_log_button.clicked.connect(self.window.log.clear)
         self.serial_reader.frame_received.connect(self.on_frame_received)
         self.serial_reader.error_occurred.connect(self.on_error)
@@ -37,6 +49,7 @@ class StageOneController:
         self.window.append_log(level, message)
         print(f"[{level}] {message}", flush=True)
 
+    @pyqtSlot()
     def validate_session(self) -> bool:
         try:
             self._session = self.session_service.build_session(
@@ -46,16 +59,21 @@ class StageOneController:
                 window_size=int(self.window.window_size_input.text()),
                 signal_order_text=self.window.signal_order_input.text(),
             )
+            self.acquisition_service.configure(self._session)
         except ValueError as exc:
             self._session = None
             self.log("ERRO", str(exc))
+            self.window.update_buffer_summary(self.acquisition_service.snapshot())
             return False
         except Exception as exc:
             self._session = None
             self.log("ERRO", f"Falha inesperada ao validar sessão: {exc}")
+            self.window.update_buffer_summary(self.acquisition_service.snapshot())
             return False
 
-        ordered_signals = ", ".join(signal.value for signal in self._session.signal_order)
+        ordered_signals = ", ".join(
+            f"{channel.index}:{channel.signal_type.value}" for channel in self._session.channels
+        )
         self.log(
             "OK",
             (
@@ -64,8 +82,10 @@ class StageOneController:
                 f"canais=[{ordered_signals}]"
             ),
         )
+        self.window.update_buffer_summary(self.acquisition_service.snapshot())
         return True
 
+    @pyqtSlot()
     def validate_sample_frame(self) -> None:
         if self._session is None and not self.validate_session():
             return
@@ -81,12 +101,30 @@ class StageOneController:
         frame = parsed.frame
         pairs = []
         for channel, value in zip(self._session.channels, frame.values_in_order, strict=True):
-            pairs.append(f"{channel.signal_type.value}={value:g} {channel.unit}")
+            pairs.append(f"ch{channel.index}:{channel.signal_type.value}={value:g} {channel.unit}")
         self.log(
             "OK",
             f"Frame aceito: seq={frame.sequence_id}, timestamp_ms={frame.timestamp_ms}, " + ", ".join(pairs),
         )
 
+    @pyqtSlot()
+    def ingest_sample_frame(self) -> None:
+        if self._session is None and not self.validate_session():
+            return
+        assert self._session is not None
+
+        line = self.window.sample_frame_input.text()
+        try:
+            frame = self.parser.parse_line(line, self._session).frame
+            self.acquisition_service.ingest_frame(frame)
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível inserir frame no buffer: {exc}")
+            return
+
+        self.window.update_buffer_summary(self.acquisition_service.snapshot())
+        self.log("BUFFER", f"Frame seq={frame.sequence_id} inserido nos buffers multicanais.")
+
+    @pyqtSlot()
     def connect_serial(self) -> None:
         if self.serial_reader.isRunning():
             self.log("INFO", "A serial já está conectada ou tentando conectar.")
@@ -94,27 +132,58 @@ class StageOneController:
         if self._session is None and not self.validate_session():
             return
         assert self._session is not None
+        self.acquisition_service.start()
         self.log("INFO", f"Tentando abrir porta serial {self._session.port} a {self._session.baudrate} baud...")
         self.serial_reader.configure(self._session)
         self.serial_reader.start()
 
+    @pyqtSlot()
     def disconnect_serial(self) -> None:
         if not self.serial_reader.isRunning():
             self.log("INFO", "A serial já está desconectada.")
+            self.acquisition_service.stop()
+            self.window.update_buffer_summary(self.acquisition_service.snapshot())
             return
         self.log("INFO", "Encerrando leitura serial...")
         self.serial_reader.stop()
 
-    def on_frame_received(self, frame: SampleFrame) -> None:
-        self.log("FRAME", f"seq={frame.sequence_id} ts={frame.timestamp_ms} values={frame.values_in_order}")
+    @pyqtSlot()
+    def clear_buffers(self) -> None:
+        self.acquisition_service.reset()
+        self.window.update_buffer_summary(self.acquisition_service.snapshot())
+        self.log("BUFFER", "Buffers multicanais limpos.")
 
+    @pyqtSlot(object)
+    def on_frame_received(self, frame: SampleFrame) -> None:
+        try:
+            self.acquisition_service.ingest_frame(frame)
+        except Exception as exc:
+            self.log("ERRO", f"Frame recebido, mas não inserido nos buffers: {exc}")
+            return
+
+        snapshot = self.acquisition_service.snapshot()
+        self.window.update_buffer_summary(snapshot)
+        if snapshot.frames_received == 1 or snapshot.frames_received % 50 == 0:
+            self.log(
+                "FRAME",
+                (
+                    f"frames={snapshot.frames_received}, último_seq={snapshot.last_sequence_id}, "
+                    f"gaps={snapshot.sequence_gaps}"
+                ),
+            )
+
+    @pyqtSlot(str)
     def on_error(self, message: str) -> None:
         self.log("ERRO", message)
 
+    @pyqtSlot(bool)
     def on_connection_changed(self, connected: bool) -> None:
         self.window.connect_button.setEnabled(not connected)
         self.window.disconnect_button.setEnabled(connected)
+        if not connected:
+            self.acquisition_service.stop()
         state = "conectado" if connected else "desconectado"
+        self.window.update_buffer_summary(self.acquisition_service.snapshot())
         self.log("STATUS", f"Serial {state}.")
 
 
@@ -122,8 +191,13 @@ def run() -> int:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    controller = StageOneController(window, SessionService(), SerialReader())
-    window.controller = controller
+    controller = StageTwoController(
+        window=window,
+        session_service=SessionService(),
+        serial_reader=SerialReader(),
+        acquisition_service=LiveAcquisitionService(),
+    )
+    window.controller = controller  # type: ignore[attr-defined]
 
     window.show()
     return app.exec_()

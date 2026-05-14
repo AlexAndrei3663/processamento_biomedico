@@ -20,7 +20,11 @@ class FrameCsvParser:
 
     Formato aceito:
         FRAME,<seq>,<timestamp_ms>,<v1>,<v2>,...,<vn>
-    onde n é exatamente o número de canais configurados na sessão.
+
+    Regras:
+    - n deve ser exatamente o número de canais configurados na sessão;
+    - os valores são associados aos canais por índice, na ordem configurada;
+    - o timestamp é recebido em milissegundos.
     """
 
     header = "FRAME"
@@ -31,10 +35,10 @@ class FrameCsvParser:
             raise FrameProtocolError("Linha vazia recebida.")
 
         tokens = [token.strip() for token in clean_line.split(",")]
-        minimum_tokens = 3 + session.channel_count
-        if len(tokens) != minimum_tokens:
+        expected_tokens = 3 + session.channel_count
+        if len(tokens) != expected_tokens:
             raise FrameProtocolError(
-                f"Quantidade de campos inválida. Esperado {minimum_tokens}, recebido {len(tokens)}."
+                f"Quantidade de campos inválida. Esperado {expected_tokens}, recebido {len(tokens)}."
             )
         if tokens[0].upper() != self.header:
             raise FrameProtocolError("Cabeçalho FRAME ausente.")
@@ -46,14 +50,14 @@ class FrameCsvParser:
         except ValueError as exc:
             raise FrameProtocolError("Campos numéricos inválidos no frame.") from exc
 
-        values_by_signal = {
-            channel.signal_type: value
+        values_by_channel_index = {
+            channel.index: value
             for channel, value in zip(session.channels, values_in_order, strict=True)
         }
         frame = SampleFrame(
             sequence_id=sequence_id,
             timestamp_ms=timestamp_ms,
-            values_by_signal=values_by_signal,
+            values_by_channel_index=values_by_channel_index,
             values_in_order=values_in_order,
         )
         return ParsedFrame(frame=frame)
