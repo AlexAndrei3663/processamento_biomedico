@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from PyQt5.QtCore import QObject, pyqtSlot
+from PyQt5.QtCore import QObject, QTimer, pyqtSlot
 from PyQt5.QtWidgets import QApplication
 
 from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
@@ -14,8 +14,7 @@ from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
-
-class StageTwoController(QObject):
+class StageThreeController(QObject):
     def __init__(
         self,
         window: MainWindow,
@@ -30,8 +29,15 @@ class StageTwoController(QObject):
         self.acquisition_service = acquisition_service
         self.parser = FrameCsvParser()
         self._session = None
+        self._last_summary_frame_count = -1
+
+        self.view_timer = QTimer(self)
+        self.view_timer.setInterval(100)  # 10 FPS para validação; suficiente para a Etapa 3.
+        self.view_timer.timeout.connect(self.refresh_live_view)
+        self.view_timer.start()
+
         self._connect_signals()
-        self.log("INFO", "Controlador inicializado. Etapa 2: sessão, protocolo e buffers multicanais.")
+        self.log("INFO", "Controlador inicializado. Etapa 3: visualização ao vivo com abas por sinal.")
 
     def _connect_signals(self) -> None:
         self.window.validate_button.clicked.connect(self.validate_session)
@@ -60,6 +66,8 @@ class StageTwoController(QObject):
                 signal_order_text=self.window.signal_order_input.text(),
             )
             self.acquisition_service.configure(self._session)
+            self.window.build_signal_tabs(self._session)
+            self._last_summary_frame_count = -1
         except ValueError as exc:
             self._session = None
             self.log("ERRO", str(exc))
@@ -82,7 +90,7 @@ class StageTwoController(QObject):
                 f"canais=[{ordered_signals}]"
             ),
         )
-        self.window.update_buffer_summary(self.acquisition_service.snapshot())
+        self.refresh_live_view(force=True)
         return True
 
     @pyqtSlot()
@@ -121,7 +129,7 @@ class StageTwoController(QObject):
             self.log("ERRO", f"Não foi possível inserir frame no buffer: {exc}")
             return
 
-        self.window.update_buffer_summary(self.acquisition_service.snapshot())
+        self.refresh_live_view(force=True)
         self.log("BUFFER", f"Frame seq={frame.sequence_id} inserido nos buffers multicanais.")
 
     @pyqtSlot()
@@ -133,6 +141,7 @@ class StageTwoController(QObject):
             return
         assert self._session is not None
         self.acquisition_service.start()
+        self.refresh_live_view(force=True)
         self.log("INFO", f"Tentando abrir porta serial {self._session.port} a {self._session.baudrate} baud...")
         self.serial_reader.configure(self._session)
         self.serial_reader.start()
@@ -142,7 +151,7 @@ class StageTwoController(QObject):
         if not self.serial_reader.isRunning():
             self.log("INFO", "A serial já está desconectada.")
             self.acquisition_service.stop()
-            self.window.update_buffer_summary(self.acquisition_service.snapshot())
+            self.refresh_live_view(force=True)
             return
         self.log("INFO", "Encerrando leitura serial...")
         self.serial_reader.stop()
@@ -150,8 +159,18 @@ class StageTwoController(QObject):
     @pyqtSlot()
     def clear_buffers(self) -> None:
         self.acquisition_service.reset()
-        self.window.update_buffer_summary(self.acquisition_service.snapshot())
+        self.window.clear_signal_tabs()
+        self.refresh_live_view(force=True)
         self.log("BUFFER", "Buffers multicanais limpos.")
+
+    @pyqtSlot()
+    def refresh_live_view(self, force: bool = False) -> None:
+        snapshot = self.acquisition_service.snapshot()
+        self.window.update_live_view(snapshot)
+
+        if force or snapshot.frames_received != self._last_summary_frame_count:
+            self.window.update_buffer_summary(snapshot)
+            self._last_summary_frame_count = snapshot.frames_received
 
     @pyqtSlot(object)
     def on_frame_received(self, frame: SampleFrame) -> None:
@@ -162,7 +181,6 @@ class StageTwoController(QObject):
             return
 
         snapshot = self.acquisition_service.snapshot()
-        self.window.update_buffer_summary(snapshot)
         if snapshot.frames_received == 1 or snapshot.frames_received % 50 == 0:
             self.log(
                 "FRAME",
@@ -183,7 +201,7 @@ class StageTwoController(QObject):
         if not connected:
             self.acquisition_service.stop()
         state = "conectado" if connected else "desconectado"
-        self.window.update_buffer_summary(self.acquisition_service.snapshot())
+        self.refresh_live_view(force=True)
         self.log("STATUS", f"Serial {state}.")
 
 
@@ -191,7 +209,7 @@ def run() -> int:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    controller = StageTwoController(
+    controller = StageThreeController(
         window=window,
         session_service=SessionService(),
         serial_reader=SerialReader(),
