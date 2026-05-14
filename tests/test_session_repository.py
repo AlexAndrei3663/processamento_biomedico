@@ -50,3 +50,15 @@ def test_session_repository_saves_lists_and_loads(tmp_path):
     assert loaded.snapshot.channels[2].values[-1] == 98
     assert loaded.active_filters[0] == ["baseline"]
     assert loaded.active_filters[1] == ["lowpass"]
+
+    csv_path = repository.export_csv(saved.session_id)
+    assert csv_path.exists()
+    csv_text = csv_path.read_text(encoding="utf-8")
+    assert "sample_index" in csv_text
+    assert "ch0_ecg_timestamp_ms" in csv_text
+    assert "ch2_oximetria_%" in csv_text
+
+    repository.delete(saved.session_id)
+    assert repository.list_sessions() == []
+    assert not saved.metadata_path.exists()
+    assert not saved.data_path.exists()

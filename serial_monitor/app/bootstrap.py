@@ -11,14 +11,15 @@ from serial_monitor.application.session_service import SessionService
 from serial_monitor.domain.models import AcquisitionSnapshot
 from serial_monitor.infrastructure.serial.protocol import FrameCsvParser
 from serial_monitor.infrastructure.serial.serial_reader import SerialReader
+from serial_monitor.infrastructure.storage.config_repository import ConfigRepository
 from serial_monitor.infrastructure.storage.session_repository import SessionRepository, StoredSessionSummary
 from serial_monitor.processing.filter_pipeline import ProcessingService
 from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
-class StageSevenController(QObject):
-    """Controlador da navegação, aquisição, processamento e armazenamento."""
+class StageEightController(QObject):
+    """Controlador da navegação, aquisição, processamento, armazenamento e presets."""
 
     def __init__(
         self,
@@ -28,6 +29,7 @@ class StageSevenController(QObject):
         acquisition_service: LiveAcquisitionService,
         processing_service: ProcessingService,
         session_repository: SessionRepository,
+        config_repository: ConfigRepository,
     ) -> None:
         super().__init__()
         self.window = window
@@ -36,6 +38,7 @@ class StageSevenController(QObject):
         self.acquisition_service = acquisition_service
         self.processing_service = processing_service
         self.session_repository = session_repository
+        self.config_repository = config_repository
         self.parser = FrameCsvParser()
         self._session = None
         self._stored_raw_snapshot: AcquisitionSnapshot | None = None
@@ -47,8 +50,9 @@ class StageSevenController(QObject):
         self.view_timer.start()
 
         self._connect_signals()
+        self.refresh_presets()
         self.refresh_stored_sessions()
-        self.log("INFO", "Controlador inicializado. Etapa 7: armazenamento de sessões.")
+        self.log("INFO", "Controlador inicializado. Etapa 8: exportação, presets e robustez.")
 
     def _connect_signals(self) -> None:
         menu = self.window.menu_page
@@ -68,6 +72,10 @@ class StageSevenController(QObject):
         config.go_live_button.clicked.connect(self.go_live_from_config)
         config.back_menu_button.clicked.connect(self.window.show_menu)
         config.clear_log_button.clicked.connect(self.window.clear_logs)
+        config.save_preset_button.clicked.connect(self.save_config_preset)
+        config.load_preset_button.clicked.connect(self.load_config_preset)
+        config.delete_preset_button.clicked.connect(self.delete_config_preset)
+        config.refresh_presets_button.clicked.connect(self.refresh_presets)
 
         live.connect_button.clicked.connect(self.connect_serial)
         live.disconnect_button.clicked.connect(self.disconnect_serial)
@@ -85,6 +93,8 @@ class StageSevenController(QObject):
         stored.open_live_button.clicked.connect(self.go_live_from_config)
         stored.refresh_button.clicked.connect(self.refresh_stored_sessions)
         stored.open_selected_button.clicked.connect(self.open_selected_stored_session)
+        stored.export_csv_button.clicked.connect(self.export_selected_session_csv)
+        stored.delete_selected_button.clicked.connect(self.delete_selected_stored_session)
         stored.sessions_list.currentItemChanged.connect(lambda *_: self.update_selected_stored_details())
 
         self.serial_reader.frame_received.connect(self.on_frame_received)
@@ -94,6 +104,18 @@ class StageSevenController(QObject):
     def log(self, level: str, message: str) -> None:
         self.window.append_log(level, message)
         print(f"[{level}] {message}", flush=True)
+
+    def _parse_positive_int(self, value: str, field_name: str) -> int:
+        text = value.strip()
+        if not text:
+            raise ValueError(f"O campo '{field_name}' não pode ficar vazio.")
+        try:
+            parsed = int(text)
+        except ValueError as exc:
+            raise ValueError(f"O campo '{field_name}' deve ser um número inteiro.") from exc
+        if parsed <= 0:
+            raise ValueError(f"O campo '{field_name}' deve ser maior que zero.")
+        return parsed
 
     @pyqtSlot()
     def start_monitoring_from_menu(self) -> None:
@@ -117,7 +139,60 @@ class StageSevenController(QObject):
     def close_application(self) -> None:
         if self.serial_reader.isRunning():
             self.serial_reader.stop()
-        QApplication.instance().quit()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    @pyqtSlot()
+    def refresh_presets(self) -> None:
+        presets = self.config_repository.list_presets()
+        self.window.update_presets(presets)
+        self.log("CONFIG", f"Presets de configuração encontrados: {len(presets)}.")
+
+    @pyqtSlot()
+    def save_config_preset(self) -> None:
+        try:
+            preset = self.config_repository.save_preset(
+                name=self.window.preset_name_text,
+                port=self.window.port_text,
+                baudrate=self._parse_positive_int(self.window.baudrate_text, "Baudrate"),
+                base_sample_rate_hz=self._parse_positive_int(self.window.sample_rate_text, "Taxa base"),
+                window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
+                signal_order_text=self.window.signal_order_text,
+            )
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível salvar preset: {exc}")
+            return
+        self.refresh_presets()
+        self.log("CONFIG", f"Preset salvo: {preset.name}.")
+
+    @pyqtSlot()
+    def load_config_preset(self) -> None:
+        name = self.window.selected_preset_name
+        if not name:
+            self.log("INFO", "Selecione um preset para carregar.")
+            return
+        try:
+            preset = self.config_repository.load_preset(name)
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível carregar preset: {exc}")
+            return
+        self.window.apply_preset(preset)
+        self.log("CONFIG", f"Preset carregado: {preset.name}.")
+
+    @pyqtSlot()
+    def delete_config_preset(self) -> None:
+        name = self.window.selected_preset_name
+        if not name:
+            self.log("INFO", "Selecione um preset para excluir.")
+            return
+        try:
+            self.config_repository.delete_preset(name)
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível excluir preset: {exc}")
+            return
+        self.refresh_presets()
+        self.log("CONFIG", f"Preset excluído: {name}.")
 
     @pyqtSlot()
     def open_stored_page(self) -> None:
@@ -147,9 +222,9 @@ class StageSevenController(QObject):
         try:
             self._session = self.session_service.build_session(
                 port=self.window.port_text,
-                baudrate=int(self.window.baudrate_text),
-                base_sample_rate_hz=int(self.window.sample_rate_text),
-                window_size=int(self.window.window_size_text),
+                baudrate=self._parse_positive_int(self.window.baudrate_text, "Baudrate"),
+                base_sample_rate_hz=self._parse_positive_int(self.window.sample_rate_text, "Taxa base"),
+                window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
                 signal_order_text=self.window.signal_order_text,
             )
             self._stored_raw_snapshot = None
@@ -309,6 +384,34 @@ class StageSevenController(QObject):
             f"Sessão armazenada aberta: {stored.summary.session_id} ({stored.summary.frames_received} frames).",
         )
 
+    @pyqtSlot()
+    def export_selected_session_csv(self) -> None:
+        session_id = self.window.selected_stored_session_id
+        if session_id is None:
+            self.log("INFO", "Selecione uma sessão armazenada para exportar.")
+            return
+        try:
+            csv_path = self.session_repository.export_csv(session_id)
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível exportar CSV: {exc}")
+            return
+        self.update_selected_stored_details()
+        self.log("STORAGE", f"CSV exportado: {csv_path}.")
+
+    @pyqtSlot()
+    def delete_selected_stored_session(self) -> None:
+        session_id = self.window.selected_stored_session_id
+        if session_id is None:
+            self.log("INFO", "Selecione uma sessão armazenada para excluir.")
+            return
+        try:
+            self.session_repository.delete(session_id)
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível excluir sessão: {exc}")
+            return
+        self.refresh_stored_sessions()
+        self.log("STORAGE", f"Sessão excluída: {session_id}.")
+
     @pyqtSlot(int, str, bool)
     def on_filter_toggled(self, channel_index: int, filter_id: str, enabled: bool) -> None:
         try:
@@ -370,6 +473,7 @@ class StageSevenController(QObject):
         self.log("STATUS", f"Serial {state}.")
 
     def _format_summary_details(self, summary: StoredSessionSummary) -> str:
+        csv_path = summary.metadata_path.parent / f"{summary.session_id}.csv"
         return "\n".join(
             [
                 f"ID: {summary.session_id}",
@@ -384,6 +488,7 @@ class StageSevenController(QObject):
                 "",
                 f"Metadados: {summary.metadata_path}",
                 f"Dados: {summary.data_path}",
+                f"CSV: {csv_path if csv_path.exists() else 'ainda não exportado'}",
             ]
         )
 
@@ -392,13 +497,14 @@ def run() -> int:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    controller = StageSevenController(
+    controller = StageEightController(
         window=window,
         session_service=SessionService(),
         serial_reader=SerialReader(),
         acquisition_service=LiveAcquisitionService(),
         processing_service=ProcessingService(),
         session_repository=SessionRepository(),
+        config_repository=ConfigRepository(),
     )
     window.controller = controller  # type: ignore[attr-defined]
 

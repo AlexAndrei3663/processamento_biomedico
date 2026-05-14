@@ -5,6 +5,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
 from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, SessionConfig
+from serial_monitor.infrastructure.storage.config_repository import SessionPreset
 from serial_monitor.infrastructure.storage.session_repository import StoredSessionSummary
 from serial_monitor.ui.pages.config_page import ConfigPage
 from serial_monitor.ui.pages.live_page import LivePage
@@ -27,7 +28,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Serial Monitor - Etapa 7")
+        self.setWindowTitle("Serial Monitor - Etapa 8")
         self.resize(1260, 820)
 
         self.stack = QStackedWidget()
@@ -94,6 +95,20 @@ class MainWindow(QMainWindow):
 
     def update_stored_details(self, text: str) -> None:
         self.stored_page.set_details(text)
+
+    def update_presets(self, presets: list[SessionPreset]) -> None:
+        self.config_page.set_presets(presets)
+
+    def apply_preset(self, preset: SessionPreset) -> None:
+        self.config_page.apply_preset(preset)
+
+    @property
+    def selected_preset_name(self) -> str | None:
+        return self.config_page.selected_preset_name
+
+    @property
+    def preset_name_text(self) -> str:
+        return self.config_page.preset_name_input.text().strip()
 
     @property
     def selected_stored_session_id(self) -> str | None:

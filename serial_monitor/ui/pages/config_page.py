@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import serial.tools.list_ports
+from PyQt5.QtGui import QIntValidator
 from PyQt5.QtWidgets import (
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -12,28 +15,41 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from serial_monitor.infrastructure.storage.config_repository import SessionPreset
+
 
 class ConfigPage(QWidget):
-    """Página de configuração da sessão e validação manual do protocolo."""
+    """Página de configuração da sessão, presets e validação manual do protocolo."""
 
     def __init__(self) -> None:
         super().__init__()
 
         root = QVBoxLayout(self)
-        root.addWidget(QLabel("Configuração da sessão"))
+        title = QLabel("Configuração da sessão")
+        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        root.addWidget(title)
 
         session_group = QGroupBox("Parâmetros da aquisição")
         session_layout = QVBoxLayout(session_group)
 
         form = QFormLayout()
+        port_line = QHBoxLayout()
         self.port_input = QLineEdit()
         self.port_input.setPlaceholderText("/dev/ttyUSB0 ou COM3")
+        self.refresh_ports_button = QPushButton("Atualizar portas")
+        port_line.addWidget(self.port_input)
+        port_line.addWidget(self.refresh_ports_button)
+
         self.baudrate_input = QLineEdit("115200")
         self.sample_rate_input = QLineEdit("1000")
         self.window_size_input = QLineEdit("1000")
         self.signal_order_input = QLineEdit("ecg,ppg,oximetria")
 
-        form.addRow("Porta serial", self.port_input)
+        self.baudrate_input.setValidator(QIntValidator(1, 10_000_000))
+        self.sample_rate_input.setValidator(QIntValidator(1, 1_000_000))
+        self.window_size_input.setValidator(QIntValidator(10, 1_000_000))
+
+        form.addRow("Porta serial", port_line)
         form.addRow("Baudrate", self.baudrate_input)
         form.addRow("Taxa base (Hz)", self.sample_rate_input)
         form.addRow("Janela de amostras", self.window_size_input)
@@ -50,6 +66,28 @@ class ConfigPage(QWidget):
         session_layout.addLayout(session_buttons)
 
         root.addWidget(session_group)
+
+        presets_group = QGroupBox("Presets de configuração")
+        presets_layout = QVBoxLayout(presets_group)
+        presets_form = QFormLayout()
+        self.preset_name_input = QLineEdit("Projeto padrão")
+        self.preset_selector = QComboBox()
+        self.preset_selector.setPlaceholderText("Selecione um preset")
+        presets_form.addRow("Nome do preset", self.preset_name_input)
+        presets_form.addRow("Presets salvos", self.preset_selector)
+        presets_layout.addLayout(presets_form)
+
+        presets_buttons = QHBoxLayout()
+        self.save_preset_button = QPushButton("Salvar preset")
+        self.load_preset_button = QPushButton("Carregar preset")
+        self.delete_preset_button = QPushButton("Excluir preset")
+        self.refresh_presets_button = QPushButton("Atualizar presets")
+        presets_buttons.addWidget(self.save_preset_button)
+        presets_buttons.addWidget(self.load_preset_button)
+        presets_buttons.addWidget(self.delete_preset_button)
+        presets_buttons.addWidget(self.refresh_presets_button)
+        presets_layout.addLayout(presets_buttons)
+        root.addWidget(presets_group)
 
         protocol_group = QGroupBox("Validação manual do protocolo")
         protocol_layout = QVBoxLayout(protocol_group)
@@ -78,3 +116,40 @@ class ConfigPage(QWidget):
         log_layout.addWidget(self.clear_log_button)
 
         root.addWidget(log_group, stretch=1)
+
+        self.refresh_ports_button.clicked.connect(self.refresh_ports)
+        self.refresh_ports()
+
+    @property
+    def selected_preset_name(self) -> str | None:
+        value = self.preset_selector.currentData()
+        if value:
+            return str(value)
+        text = self.preset_selector.currentText().strip()
+        return text or None
+
+    def set_presets(self, presets: list[SessionPreset]) -> None:
+        current = self.selected_preset_name
+        self.preset_selector.clear()
+        for preset in presets:
+            self.preset_selector.addItem(preset.name, preset.name)
+        if current:
+            index = self.preset_selector.findData(current)
+            if index >= 0:
+                self.preset_selector.setCurrentIndex(index)
+
+    def apply_preset(self, preset: SessionPreset) -> None:
+        self.preset_name_input.setText(preset.name)
+        self.port_input.setText(preset.port)
+        self.baudrate_input.setText(str(preset.baudrate))
+        self.sample_rate_input.setText(str(preset.base_sample_rate_hz))
+        self.window_size_input.setText(str(preset.window_size))
+        self.signal_order_input.setText(preset.signal_order_text)
+
+    def refresh_ports(self) -> None:
+        ports = list(serial.tools.list_ports.comports())
+        current = self.port_input.text().strip()
+        if current:
+            return
+        if ports:
+            self.port_input.setText(ports[0].device)

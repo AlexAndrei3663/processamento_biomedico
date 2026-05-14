@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -178,6 +179,81 @@ class SessionRepository:
             snapshot=snapshot,
             active_filters=active_filters,
         )
+
+
+    def export_csv(self, session_id: str, output_path: str | Path | None = None) -> Path:
+        """Exporta uma sessão salva para CSV em formato tabular.
+
+        O CSV contém uma linha por amostra e colunas independentes por canal:
+        ``timestamp_ms``, ``sequence_id`` e ``chN_<tipo>_<unidade>``.
+        Para sessões com canais de tamanhos diferentes, as linhas faltantes ficam vazias.
+        """
+        stored = self.load(session_id)
+        if output_path is None:
+            output_path = self.base_dir / f"{session_id}.csv"
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        channels = [stored.snapshot.channels[index] for index in sorted(stored.snapshot.channels)]
+        max_len = max((channel.sample_count for channel in channels), default=0)
+        if max_len <= 0:
+            raise ValueError("A sessão não possui amostras exportáveis.")
+
+        header = ["sample_index"]
+        for channel_snapshot in channels:
+            channel = channel_snapshot.channel
+            signal = channel.signal_type.value
+            unit = channel.unit.replace(" ", "_") or "value"
+            prefix = f"ch{channel.index}_{signal}"
+            header.extend([
+                f"{prefix}_timestamp_ms",
+                f"{prefix}_sequence_id",
+                f"{prefix}_{unit}",
+            ])
+
+        with output_path.open("w", newline="", encoding="utf-8") as fp:
+            writer = csv.writer(fp)
+            writer.writerow(header)
+            for row_index in range(max_len):
+                row: list[object] = [row_index]
+                for channel_snapshot in channels:
+                    if row_index < channel_snapshot.sample_count:
+                        row.extend([
+                            int(channel_snapshot.timestamps_ms[row_index]),
+                            int(channel_snapshot.sequence_ids[row_index]),
+                            float(channel_snapshot.values[row_index]),
+                        ])
+                    else:
+                        row.extend(["", "", ""])
+                writer.writerow(row)
+
+        return output_path
+
+    def delete(self, session_id: str) -> None:
+        """Remove os arquivos JSON, NPZ e CSV associado, se existir."""
+        metadata_path = self.base_dir / f"{session_id}{self.METADATA_SUFFIX}"
+        data_path: Path | None = None
+        if metadata_path.exists():
+            try:
+                metadata = self._read_metadata(metadata_path)
+                data_path = self._summary_from_metadata(metadata, metadata_path).data_path
+            except Exception:
+                data_path = metadata_path.with_suffix(self.DATA_SUFFIX)
+        else:
+            raise FileNotFoundError(f"Sessão não encontrada: {session_id}")
+
+        paths = [metadata_path]
+        if data_path is not None:
+            paths.append(data_path)
+        paths.append(self.base_dir / f"{session_id}.csv")
+
+        removed = False
+        for path in paths:
+            if path.exists():
+                path.unlink()
+                removed = True
+        if not removed:
+            raise FileNotFoundError(f"Sessão não encontrada: {session_id}")
 
     def _build_metadata(
         self,

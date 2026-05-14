@@ -19,7 +19,7 @@ from serial_monitor.infrastructure.storage.session_repository import StoredSessi
 
 
 class StoredPage(QWidget):
-    """Página de listagem e abertura de sessões armazenadas."""
+    """Página de listagem, abertura, exportação e exclusão de sessões armazenadas."""
 
     SESSION_ID_ROLE = Qt.UserRole + 1
 
@@ -48,10 +48,16 @@ class StoredPage(QWidget):
         self.sessions_list = QListWidget()
         self.refresh_button = QPushButton("Atualizar lista")
         self.open_selected_button = QPushButton("Abrir sessão")
+        self.export_csv_button = QPushButton("Exportar CSV")
+        self.delete_selected_button = QPushButton("Excluir sessão")
         self.open_selected_button.setEnabled(False)
+        self.export_csv_button.setEnabled(False)
+        self.delete_selected_button.setEnabled(False)
         list_layout.addWidget(self.sessions_list)
         list_layout.addWidget(self.refresh_button)
         list_layout.addWidget(self.open_selected_button)
+        list_layout.addWidget(self.export_csv_button)
+        list_layout.addWidget(self.delete_selected_button)
 
         details_group = QGroupBox("Detalhes")
         details_layout = QVBoxLayout(details_group)
@@ -79,7 +85,7 @@ class StoredPage(QWidget):
         summaries = list(summaries)
         if not summaries:
             self.sessions_list.addItem("Nenhuma sessão armazenada encontrada.")
-            self.open_selected_button.setEnabled(False)
+            self._set_action_buttons_enabled(False)
             self.details.setPlainText(
                 "Ainda não há sessões salvas em data/sessions.\n\n"
                 "Para criar uma sessão armazenada, faça uma aquisição ou insira frames de teste "
@@ -102,5 +108,10 @@ class StoredPage(QWidget):
     def set_details(self, text: str) -> None:
         self.details.setPlainText(text)
 
+    def _set_action_buttons_enabled(self, enabled: bool) -> None:
+        self.open_selected_button.setEnabled(enabled)
+        self.export_csv_button.setEnabled(enabled)
+        self.delete_selected_button.setEnabled(enabled)
+
     def _on_selection_changed(self) -> None:
-        self.open_selected_button.setEnabled(self.selected_session_id is not None)
+        self._set_action_buttons_enabled(self.selected_session_id is not None)
