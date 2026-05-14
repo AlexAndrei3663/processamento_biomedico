@@ -8,15 +8,17 @@ from PyQt5.QtWidgets import QApplication
 
 from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
 from serial_monitor.application.session_service import SessionService
+from serial_monitor.domain.models import AcquisitionSnapshot
 from serial_monitor.infrastructure.serial.protocol import FrameCsvParser
 from serial_monitor.infrastructure.serial.serial_reader import SerialReader
+from serial_monitor.infrastructure.storage.session_repository import SessionRepository, StoredSessionSummary
 from serial_monitor.processing.filter_pipeline import ProcessingService
 from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
-class StageSixController(QObject):
-    """Controlador da navegação, aquisição e pipeline de processamento."""
+class StageSevenController(QObject):
+    """Controlador da navegação, aquisição, processamento e armazenamento."""
 
     def __init__(
         self,
@@ -25,6 +27,7 @@ class StageSixController(QObject):
         serial_reader: SerialReader,
         acquisition_service: LiveAcquisitionService,
         processing_service: ProcessingService,
+        session_repository: SessionRepository,
     ) -> None:
         super().__init__()
         self.window = window
@@ -32,8 +35,10 @@ class StageSixController(QObject):
         self.serial_reader = serial_reader
         self.acquisition_service = acquisition_service
         self.processing_service = processing_service
+        self.session_repository = session_repository
         self.parser = FrameCsvParser()
         self._session = None
+        self._stored_raw_snapshot: AcquisitionSnapshot | None = None
         self._last_summary_frame_count = -1
 
         self.view_timer = QTimer(self)
@@ -42,7 +47,8 @@ class StageSixController(QObject):
         self.view_timer.start()
 
         self._connect_signals()
-        self.log("INFO", "Controlador inicializado. Etapa 6: visualização em espectro.")
+        self.refresh_stored_sessions()
+        self.log("INFO", "Controlador inicializado. Etapa 7: armazenamento de sessões.")
 
     def _connect_signals(self) -> None:
         menu = self.window.menu_page
@@ -52,7 +58,7 @@ class StageSixController(QObject):
 
         menu.start_button.clicked.connect(self.start_monitoring_from_menu)
         menu.config_button.clicked.connect(self.window.show_config)
-        menu.stored_button.clicked.connect(self.window.show_stored)
+        menu.stored_button.clicked.connect(self.open_stored_page)
         menu.exit_button.clicked.connect(self.close_application)
 
         config.validate_button.clicked.connect(self.validate_session)
@@ -66,9 +72,10 @@ class StageSixController(QObject):
         live.connect_button.clicked.connect(self.connect_serial)
         live.disconnect_button.clicked.connect(self.disconnect_serial)
         live.clear_buffers_button.clicked.connect(self.clear_buffers)
+        live.save_session_button.clicked.connect(self.save_current_session)
         live.clear_log_button.clicked.connect(self.window.clear_logs)
         live.open_config_button.clicked.connect(self.window.show_config)
-        live.open_stored_button.clicked.connect(self.window.show_stored)
+        live.open_stored_button.clicked.connect(self.open_stored_page)
         live.back_menu_button.clicked.connect(self.window.show_menu)
         live.filter_toggled.connect(self.on_filter_toggled)
         live.display_mode_changed.connect(self.on_display_mode_changed)
@@ -76,7 +83,9 @@ class StageSixController(QObject):
         stored.back_menu_button.clicked.connect(self.window.show_menu)
         stored.open_config_button.clicked.connect(self.window.show_config)
         stored.open_live_button.clicked.connect(self.go_live_from_config)
-        stored.refresh_button.clicked.connect(self.refresh_stored_sessions_placeholder)
+        stored.refresh_button.clicked.connect(self.refresh_stored_sessions)
+        stored.open_selected_button.clicked.connect(self.open_selected_stored_session)
+        stored.sessions_list.currentItemChanged.connect(lambda *_: self.update_selected_stored_details())
 
         self.serial_reader.frame_received.connect(self.on_frame_received)
         self.serial_reader.error_occurred.connect(self.on_error)
@@ -92,6 +101,7 @@ class StageSixController(QObject):
             self.window.show_config()
             self.log("INFO", "Configure e valide a sessão antes de iniciar o monitoramento.")
             return
+        self._stored_raw_snapshot = None
         self.window.show_live()
         self.refresh_live_view(force=True)
 
@@ -99,6 +109,7 @@ class StageSixController(QObject):
     def go_live_from_config(self) -> None:
         if self._session is None and not self.validate_session():
             return
+        self._stored_raw_snapshot = None
         self.window.show_live()
         self.refresh_live_view(force=True)
 
@@ -109,11 +120,27 @@ class StageSixController(QObject):
         QApplication.instance().quit()
 
     @pyqtSlot()
-    def refresh_stored_sessions_placeholder(self) -> None:
-        self.log(
-            "INFO",
-            "A listagem real de sessões armazenadas será implementada na etapa de armazenamento.",
-        )
+    def open_stored_page(self) -> None:
+        self.refresh_stored_sessions()
+        self.window.show_stored()
+
+    @pyqtSlot()
+    def refresh_stored_sessions(self) -> None:
+        summaries = self.session_repository.list_sessions()
+        self.window.update_stored_sessions(summaries)
+        if summaries:
+            self.window.update_stored_details(self._format_summary_details(summaries[0]))
+        self.log("STORAGE", f"Sessões armazenadas encontradas: {len(summaries)}.")
+
+    @pyqtSlot()
+    def update_selected_stored_details(self) -> None:
+        selected_id = self.window.selected_stored_session_id
+        if selected_id is None:
+            return
+        for summary in self.session_repository.list_sessions():
+            if summary.session_id == selected_id:
+                self.window.update_stored_details(self._format_summary_details(summary))
+                return
 
     @pyqtSlot()
     def validate_session(self) -> bool:
@@ -125,17 +152,20 @@ class StageSixController(QObject):
                 window_size=int(self.window.window_size_text),
                 signal_order_text=self.window.signal_order_text,
             )
+            self._stored_raw_snapshot = None
             self.acquisition_service.configure(self._session)
             self.processing_service.configure(self._session)
             self.window.build_signal_tabs(self._session)
             self._last_summary_frame_count = -1
         except ValueError as exc:
             self._session = None
+            self._stored_raw_snapshot = None
             self.log("ERRO", str(exc))
             self.refresh_live_view(force=True)
             return False
         except Exception as exc:
             self._session = None
+            self._stored_raw_snapshot = None
             self.log("ERRO", f"Falha inesperada ao validar sessão: {exc}")
             self.refresh_live_view(force=True)
             return False
@@ -182,6 +212,7 @@ class StageSixController(QObject):
             return
         assert self._session is not None
 
+        self._stored_raw_snapshot = None
         line = self.window.sample_frame_text
         try:
             frame = self.parser.parse_line(line, self._session).frame
@@ -201,6 +232,7 @@ class StageSixController(QObject):
         if self._session is None and not self.validate_session():
             return
         assert self._session is not None
+        self._stored_raw_snapshot = None
         self.acquisition_service.start()
         self.refresh_live_view(force=True)
         self.log("INFO", f"Tentando abrir porta serial {self._session.port} a {self._session.baudrate} baud...")
@@ -219,10 +251,63 @@ class StageSixController(QObject):
 
     @pyqtSlot()
     def clear_buffers(self) -> None:
+        self._stored_raw_snapshot = None
         self.acquisition_service.reset()
         self.window.clear_signal_tabs()
         self.refresh_live_view(force=True)
         self.log("BUFFER", "Buffers multicanais limpos.")
+
+    @pyqtSlot()
+    def save_current_session(self) -> None:
+        if self._session is None:
+            self.log("ERRO", "Não há sessão validada para salvar.")
+            return
+
+        snapshot = self.acquisition_service.snapshot()
+        try:
+            summary = self.session_repository.save(
+                session=self._session,
+                snapshot=snapshot,
+                active_filters=self.processing_service.enabled_filters_snapshot(),
+            )
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível salvar a sessão: {exc}")
+            return
+
+        self.refresh_stored_sessions()
+        self.log(
+            "STORAGE",
+            f"Sessão salva: {summary.session_id} ({summary.frames_received} frames, {summary.channel_count} canais).",
+        )
+
+    @pyqtSlot()
+    def open_selected_stored_session(self) -> None:
+        session_id = self.window.selected_stored_session_id
+        if session_id is None:
+            self.log("INFO", "Selecione uma sessão armazenada para abrir.")
+            return
+
+        try:
+            stored = self.session_repository.load(session_id)
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível abrir a sessão armazenada: {exc}")
+            return
+
+        if self.serial_reader.isRunning():
+            self.serial_reader.stop()
+
+        self._session = stored.session
+        self._stored_raw_snapshot = stored.snapshot
+        self.acquisition_service.configure(stored.session)
+        self.processing_service.configure(stored.session)
+        self.processing_service.set_enabled_filters(stored.active_filters)
+        self.window.build_signal_tabs(stored.session)
+        self.window.show_live()
+        self.refresh_live_view(force=True)
+        self.log(
+            "STORAGE",
+            f"Sessão armazenada aberta: {stored.summary.session_id} ({stored.summary.frames_received} frames).",
+        )
 
     @pyqtSlot(int, str, bool)
     def on_filter_toggled(self, channel_index: int, filter_id: str, enabled: bool) -> None:
@@ -244,7 +329,7 @@ class StageSixController(QObject):
 
     @pyqtSlot()
     def refresh_live_view(self, force: bool = False) -> None:
-        raw_snapshot = self.acquisition_service.snapshot()
+        raw_snapshot = self._stored_raw_snapshot or self.acquisition_service.snapshot()
         processed_snapshot = self.processing_service.process(raw_snapshot)
         self.window.update_live_view(processed_snapshot)
 
@@ -254,6 +339,7 @@ class StageSixController(QObject):
 
     @pyqtSlot(object)
     def on_frame_received(self, frame: SampleFrame) -> None:
+        self._stored_raw_snapshot = None
         try:
             self.acquisition_service.ingest_frame(frame)
         except Exception as exc:
@@ -283,17 +369,36 @@ class StageSixController(QObject):
         self.refresh_live_view(force=True)
         self.log("STATUS", f"Serial {state}.")
 
+    def _format_summary_details(self, summary: StoredSessionSummary) -> str:
+        return "\n".join(
+            [
+                f"ID: {summary.session_id}",
+                f"Criada em: {summary.created_at}",
+                f"Frames: {summary.frames_received}",
+                f"Gaps de sequência: {summary.sequence_gaps}",
+                f"Canais: {summary.channel_count}",
+                f"Taxa base: {summary.base_sample_rate_hz} Hz",
+                "",
+                "Ordem dos canais:",
+                *(f"  - {label}" for label in summary.channel_labels),
+                "",
+                f"Metadados: {summary.metadata_path}",
+                f"Dados: {summary.data_path}",
+            ]
+        )
+
 
 def run() -> int:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    controller = StageSixController(
+    controller = StageSevenController(
         window=window,
         session_service=SessionService(),
         serial_reader=SerialReader(),
         acquisition_service=LiveAcquisitionService(),
         processing_service=ProcessingService(),
+        session_repository=SessionRepository(),
     )
     window.controller = controller  # type: ignore[attr-defined]
 

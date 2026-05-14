@@ -200,6 +200,12 @@ class SignalTab(QWidget):
             )
         self.last_time_label.setText(f"Último timestamp: {snapshot.last_timestamp_ms} ms")
 
+        active_filter_set = set(snapshot.active_filters)
+        for filter_id, checkbox in self.filter_checkboxes.items():
+            checkbox.blockSignals(True)
+            checkbox.setChecked(filter_id in active_filter_set)
+            checkbox.blockSignals(False)
+
         if snapshot.active_filters:
             names = []
             for filter_id in snapshot.active_filters:

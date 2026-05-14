@@ -1,23 +1,27 @@
 from __future__ import annotations
 
+from typing import Iterable
+
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from serial_monitor.infrastructure.storage.session_repository import StoredSessionSummary
+
 
 class StoredPage(QWidget):
-    """Página reservada para sessões armazenadas.
+    """Página de listagem e abertura de sessões armazenadas."""
 
-    A persistência real entra em etapa posterior. Esta página já fixa a navegação
-    e os pontos de extensão para listar, abrir e exportar aquisições salvas.
-    """
+    SESSION_ID_ROLE = Qt.UserRole + 1
 
     def __init__(self) -> None:
         super().__init__()
@@ -42,7 +46,6 @@ class StoredPage(QWidget):
         list_group = QGroupBox("Sessões disponíveis")
         list_layout = QVBoxLayout(list_group)
         self.sessions_list = QListWidget()
-        self.sessions_list.addItem("Nenhuma sessão armazenada nesta etapa.")
         self.refresh_button = QPushButton("Atualizar lista")
         self.open_selected_button = QPushButton("Abrir sessão")
         self.open_selected_button.setEnabled(False)
@@ -54,13 +57,50 @@ class StoredPage(QWidget):
         details_layout = QVBoxLayout(details_group)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
-        self.details.setPlainText(
-            "A tela de sinais armazenados já faz parte da navegação final.\n\n"
-            "A gravação, indexação, abertura e visualização de sessões salvas serão "
-            "implementadas na etapa de armazenamento."
-        )
         details_layout.addWidget(self.details)
 
         content.addWidget(list_group, stretch=1)
         content.addWidget(details_group, stretch=2)
         root.addLayout(content, stretch=1)
+
+        self.sessions_list.currentItemChanged.connect(self._on_selection_changed)
+        self.set_sessions([])
+
+    @property
+    def selected_session_id(self) -> str | None:
+        item = self.sessions_list.currentItem()
+        if item is None:
+            return None
+        value = item.data(self.SESSION_ID_ROLE)
+        return str(value) if value else None
+
+    def set_sessions(self, summaries: Iterable[StoredSessionSummary]) -> None:
+        self.sessions_list.clear()
+        summaries = list(summaries)
+        if not summaries:
+            self.sessions_list.addItem("Nenhuma sessão armazenada encontrada.")
+            self.open_selected_button.setEnabled(False)
+            self.details.setPlainText(
+                "Ainda não há sessões salvas em data/sessions.\n\n"
+                "Para criar uma sessão armazenada, faça uma aquisição ou insira frames de teste "
+                "e clique em 'Salvar sessão' na tela de visualização ao vivo."
+            )
+            return
+
+        for summary in summaries:
+            label = (
+                f"{summary.created_at} | {summary.frames_received} frames | "
+                f"{summary.channel_count} canais"
+            )
+            item = QListWidgetItem(label)
+            item.setData(self.SESSION_ID_ROLE, summary.session_id)
+            item.setToolTip(summary.session_id)
+            self.sessions_list.addItem(item)
+
+        self.sessions_list.setCurrentRow(0)
+
+    def set_details(self, text: str) -> None:
+        self.details.setPlainText(text)
+
+    def _on_selection_changed(self) -> None:
+        self.open_selected_button.setEnabled(self.selected_session_id is not None)

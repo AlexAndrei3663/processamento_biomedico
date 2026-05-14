@@ -307,6 +307,29 @@ class ProcessingService:
         else:
             self._enabled_filters[channel_index].discard(filter_id)
 
+
+    def enabled_filters_snapshot(self) -> Dict[int, List[str]]:
+        """Retorna uma cópia serializável dos filtros ativos por canal."""
+        return {index: sorted(filters) for index, filters in self._enabled_filters.items()}
+
+    def set_enabled_filters(self, filters_by_channel: Dict[int, List[str]]) -> None:
+        """Restaura filtros ativos, ignorando filtros desconhecidos.
+
+        Usado ao abrir uma sessão armazenada. A validação é conservadora para não
+        impedir a abertura de arquivos antigos caso algum filtro deixe de existir.
+        """
+        if self._session is None:
+            raise RuntimeError("Processamento não configurado.")
+
+        restored: Dict[int, Set[str]] = {channel.index: set() for channel in self._session.channels}
+        for channel_index, filter_ids in filters_by_channel.items():
+            if channel_index not in restored:
+                continue
+            for filter_id in filter_ids:
+                if filter_id in FILTER_DEFINITIONS:
+                    restored[channel_index].add(filter_id)
+        self._enabled_filters = restored
+
     def active_filters_for(self, channel_index: int) -> List[str]:
         return sorted(self._enabled_filters.get(channel_index, set()))
 

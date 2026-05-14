@@ -5,6 +5,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
 from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, SessionConfig
+from serial_monitor.infrastructure.storage.session_repository import StoredSessionSummary
 from serial_monitor.ui.pages.config_page import ConfigPage
 from serial_monitor.ui.pages.live_page import LivePage
 from serial_monitor.ui.pages.menu_page import MenuPage
@@ -26,7 +27,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Serial Monitor - Etapa 5")
+        self.setWindowTitle("Serial Monitor - Etapa 7")
         self.resize(1260, 820)
 
         self.stack = QStackedWidget()
@@ -87,6 +88,16 @@ class MainWindow(QMainWindow):
     def update_connection_state(self, connected: bool) -> None:
         self.live_page.connect_button.setEnabled(not connected)
         self.live_page.disconnect_button.setEnabled(connected)
+
+    def update_stored_sessions(self, summaries: list[StoredSessionSummary]) -> None:
+        self.stored_page.set_sessions(summaries)
+
+    def update_stored_details(self, text: str) -> None:
+        self.stored_page.set_details(text)
+
+    @property
+    def selected_stored_session_id(self) -> str | None:
+        return self.stored_page.selected_session_id
 
     # Atalhos usados pelo controlador para manter a leitura do código simples.
     @property
