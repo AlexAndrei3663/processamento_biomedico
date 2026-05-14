@@ -14,7 +14,9 @@ from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
-class StageThreeController(QObject):
+class StageFourController(QObject):
+    """Controlador da navegação final e da aquisição ao vivo."""
+
     def __init__(
         self,
         window: MainWindow,
@@ -32,21 +34,45 @@ class StageThreeController(QObject):
         self._last_summary_frame_count = -1
 
         self.view_timer = QTimer(self)
-        self.view_timer.setInterval(100)  # 10 FPS para validação; suficiente para a Etapa 3.
+        self.view_timer.setInterval(100)
         self.view_timer.timeout.connect(self.refresh_live_view)
         self.view_timer.start()
 
         self._connect_signals()
-        self.log("INFO", "Controlador inicializado. Etapa 3: visualização ao vivo com abas por sinal.")
+        self.log("INFO", "Controlador inicializado. Etapa 4: navegação final por páginas.")
 
     def _connect_signals(self) -> None:
-        self.window.validate_button.clicked.connect(self.validate_session)
-        self.window.validate_frame_button.clicked.connect(self.validate_sample_frame)
-        self.window.ingest_frame_button.clicked.connect(self.ingest_sample_frame)
-        self.window.connect_button.clicked.connect(self.connect_serial)
-        self.window.disconnect_button.clicked.connect(self.disconnect_serial)
-        self.window.clear_buffers_button.clicked.connect(self.clear_buffers)
-        self.window.clear_log_button.clicked.connect(self.window.log.clear)
+        menu = self.window.menu_page
+        config = self.window.config_page
+        live = self.window.live_page
+        stored = self.window.stored_page
+
+        menu.start_button.clicked.connect(self.start_monitoring_from_menu)
+        menu.config_button.clicked.connect(self.window.show_config)
+        menu.stored_button.clicked.connect(self.window.show_stored)
+        menu.exit_button.clicked.connect(self.close_application)
+
+        config.validate_button.clicked.connect(self.validate_session)
+        config.validate_frame_button.clicked.connect(self.validate_sample_frame)
+        config.ingest_frame_button.clicked.connect(self.ingest_sample_frame)
+        config.clear_buffers_button.clicked.connect(self.clear_buffers)
+        config.go_live_button.clicked.connect(self.go_live_from_config)
+        config.back_menu_button.clicked.connect(self.window.show_menu)
+        config.clear_log_button.clicked.connect(self.window.clear_logs)
+
+        live.connect_button.clicked.connect(self.connect_serial)
+        live.disconnect_button.clicked.connect(self.disconnect_serial)
+        live.clear_buffers_button.clicked.connect(self.clear_buffers)
+        live.clear_log_button.clicked.connect(self.window.clear_logs)
+        live.open_config_button.clicked.connect(self.window.show_config)
+        live.open_stored_button.clicked.connect(self.window.show_stored)
+        live.back_menu_button.clicked.connect(self.window.show_menu)
+
+        stored.back_menu_button.clicked.connect(self.window.show_menu)
+        stored.open_config_button.clicked.connect(self.window.show_config)
+        stored.open_live_button.clicked.connect(self.go_live_from_config)
+        stored.refresh_button.clicked.connect(self.refresh_stored_sessions_placeholder)
+
         self.serial_reader.frame_received.connect(self.on_frame_received)
         self.serial_reader.error_occurred.connect(self.on_error)
         self.serial_reader.connection_changed.connect(self.on_connection_changed)
@@ -56,14 +82,43 @@ class StageThreeController(QObject):
         print(f"[{level}] {message}", flush=True)
 
     @pyqtSlot()
+    def start_monitoring_from_menu(self) -> None:
+        if self._session is None:
+            self.window.show_config()
+            self.log("INFO", "Configure e valide a sessão antes de iniciar o monitoramento.")
+            return
+        self.window.show_live()
+        self.refresh_live_view(force=True)
+
+    @pyqtSlot()
+    def go_live_from_config(self) -> None:
+        if self._session is None and not self.validate_session():
+            return
+        self.window.show_live()
+        self.refresh_live_view(force=True)
+
+    @pyqtSlot()
+    def close_application(self) -> None:
+        if self.serial_reader.isRunning():
+            self.serial_reader.stop()
+        QApplication.instance().quit()
+
+    @pyqtSlot()
+    def refresh_stored_sessions_placeholder(self) -> None:
+        self.log(
+            "INFO",
+            "A listagem real de sessões armazenadas será implementada na etapa de armazenamento.",
+        )
+
+    @pyqtSlot()
     def validate_session(self) -> bool:
         try:
             self._session = self.session_service.build_session(
-                port=self.window.port_input.text().strip(),
-                baudrate=int(self.window.baudrate_input.text()),
-                base_sample_rate_hz=int(self.window.sample_rate_input.text()),
-                window_size=int(self.window.window_size_input.text()),
-                signal_order_text=self.window.signal_order_input.text(),
+                port=self.window.port_text,
+                baudrate=int(self.window.baudrate_text),
+                base_sample_rate_hz=int(self.window.sample_rate_text),
+                window_size=int(self.window.window_size_text),
+                signal_order_text=self.window.signal_order_text,
             )
             self.acquisition_service.configure(self._session)
             self.window.build_signal_tabs(self._session)
@@ -99,7 +154,7 @@ class StageThreeController(QObject):
             return
         assert self._session is not None
 
-        line = self.window.sample_frame_input.text()
+        line = self.window.sample_frame_text
         try:
             parsed = self.parser.parse_line(line, self._session)
         except Exception as exc:
@@ -121,7 +176,7 @@ class StageThreeController(QObject):
             return
         assert self._session is not None
 
-        line = self.window.sample_frame_input.text()
+        line = self.window.sample_frame_text
         try:
             frame = self.parser.parse_line(line, self._session).frame
             self.acquisition_service.ingest_frame(frame)
@@ -196,8 +251,7 @@ class StageThreeController(QObject):
 
     @pyqtSlot(bool)
     def on_connection_changed(self, connected: bool) -> None:
-        self.window.connect_button.setEnabled(not connected)
-        self.window.disconnect_button.setEnabled(connected)
+        self.window.update_connection_state(connected)
         if not connected:
             self.acquisition_service.stop()
         state = "conectado" if connected else "desconectado"
@@ -209,7 +263,7 @@ def run() -> int:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    controller = StageThreeController(
+    controller = StageFourController(
         window=window,
         session_service=SessionService(),
         serial_reader=SerialReader(),
