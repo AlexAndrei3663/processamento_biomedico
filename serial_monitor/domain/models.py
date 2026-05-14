@@ -106,6 +106,15 @@ class MetricSnapshot:
     maximum: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SpectrumSnapshot:
+    frequencies_hz: np.ndarray
+    magnitudes: np.ndarray
+    peak_frequency_hz: float | None = None
+    peak_magnitude: float | None = None
+    resolution_hz: float | None = None
+
+
 @dataclass(slots=True)
 class ProcessedChannelSnapshot:
     channel: SignalChannelConfig
@@ -121,6 +130,8 @@ class ProcessedChannelSnapshot:
     active_filters: List[str]
     filter_status: List[str]
     metrics: MetricSnapshot
+    raw_spectrum: SpectrumSnapshot
+    processed_spectrum: SpectrumSnapshot
 
 
 @dataclass(slots=True)

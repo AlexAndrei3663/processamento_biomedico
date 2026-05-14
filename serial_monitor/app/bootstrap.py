@@ -15,7 +15,7 @@ from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
-class StageFiveController(QObject):
+class StageSixController(QObject):
     """Controlador da navegação, aquisição e pipeline de processamento."""
 
     def __init__(
@@ -42,7 +42,7 @@ class StageFiveController(QObject):
         self.view_timer.start()
 
         self._connect_signals()
-        self.log("INFO", "Controlador inicializado. Etapa 5: filtros e pipeline de processamento.")
+        self.log("INFO", "Controlador inicializado. Etapa 6: visualização em espectro.")
 
     def _connect_signals(self) -> None:
         menu = self.window.menu_page
@@ -288,7 +288,7 @@ def run() -> int:
     app = QApplication(sys.argv)
     window = MainWindow()
 
-    controller = StageFiveController(
+    controller = StageSixController(
         window=window,
         session_service=SessionService(),
         serial_reader=SerialReader(),

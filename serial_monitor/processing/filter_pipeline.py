@@ -16,6 +16,7 @@ from serial_monitor.domain.models import (
     SessionConfig,
     SignalChannelConfig,
 )
+from serial_monitor.processing.spectrum import calculate_single_sided_spectrum
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +320,15 @@ class ProcessingService:
             if processed_values.size:
                 last_processed_value = float(processed_values[-1])
 
+            raw_spectrum = calculate_single_sided_spectrum(
+                channel_snapshot.values,
+                channel_snapshot.channel.sample_rate_hz,
+            )
+            processed_spectrum = calculate_single_sided_spectrum(
+                processed_values,
+                channel_snapshot.channel.sample_rate_hz,
+            )
+
             processed_channels[index] = ProcessedChannelSnapshot(
                 channel=channel_snapshot.channel,
                 sample_count=channel_snapshot.sample_count,
@@ -333,6 +343,8 @@ class ProcessingService:
                 active_filters=active_filters,
                 filter_status=status,
                 metrics=calculate_metrics(processed_values),
+                raw_spectrum=raw_spectrum,
+                processed_spectrum=processed_spectrum,
             )
 
         return ProcessedAcquisitionSnapshot(

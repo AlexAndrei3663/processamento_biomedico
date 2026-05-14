@@ -10,30 +10,35 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QRadioButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from serial_monitor.domain.models import ProcessedChannelSnapshot, SignalChannelConfig
+from serial_monitor.domain.models import ProcessedChannelSnapshot, SignalChannelConfig, SpectrumSnapshot
 from serial_monitor.processing.filter_pipeline import FILTER_DEFINITIONS
 from serial_monitor.ui.widgets.signal_plot_widget import SignalPlotWidget
 
 
 class SignalTab(QWidget):
-    """Aba de visualização e processamento de um canal."""
+    """Aba de visualização, processamento e espectro de um canal."""
 
     filter_toggled = pyqtSignal(int, str, bool)
     display_mode_changed = pyqtSignal(int, str)
 
     RAW_MODE = "raw"
     PROCESSED_MODE = "processed"
+    TIME_DOMAIN = "time"
+    SPECTRUM_DOMAIN = "spectrum"
 
     def __init__(self, channel: SignalChannelConfig) -> None:
         super().__init__()
         self.channel = channel
         self.display_mode = self.RAW_MODE
+        self.plot_domain = self.TIME_DOMAIN
+        self._last_snapshot: ProcessedChannelSnapshot | None = None
         self.filter_checkboxes: Dict[str, QCheckBox] = {}
         self.plot = SignalPlotWidget(channel)
 
@@ -42,7 +47,7 @@ class SignalTab(QWidget):
 
         side_panel = QFrame()
         side_panel.setFrameShape(QFrame.StyledPanel)
-        side_panel.setMinimumWidth(285)
+        side_panel.setMinimumWidth(305)
         side_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         side_layout = QVBoxLayout(side_panel)
 
@@ -69,7 +74,7 @@ class SignalTab(QWidget):
         ):
             side_layout.addWidget(widget)
 
-        view_group = QGroupBox("Visualização")
+        view_group = QGroupBox("Sinal exibido")
         view_layout = QVBoxLayout(view_group)
         self.raw_radio = QRadioButton("Sinal bruto")
         self.processed_radio = QRadioButton("Sinal processado")
@@ -80,6 +85,20 @@ class SignalTab(QWidget):
         view_layout.addWidget(self.raw_radio)
         view_layout.addWidget(self.processed_radio)
         side_layout.addWidget(view_group)
+
+        domain_group = QGroupBox("Domínio")
+        domain_layout = QVBoxLayout(domain_group)
+        self.time_radio = QRadioButton("Tempo")
+        self.spectrum_radio = QRadioButton("Espectro")
+        self.time_radio.setChecked(True)
+        self.domain_button_group = QButtonGroup(self)
+        self.domain_button_group.addButton(self.time_radio)
+        self.domain_button_group.addButton(self.spectrum_radio)
+        self.toggle_spectrum_button = QPushButton("Mostrar espectro")
+        domain_layout.addWidget(self.time_radio)
+        domain_layout.addWidget(self.spectrum_radio)
+        domain_layout.addWidget(self.toggle_spectrum_button)
+        side_layout.addWidget(domain_group)
 
         filter_group = QGroupBox("Filtros pré-definidos")
         filter_layout = QVBoxLayout(filter_group)
@@ -112,6 +131,15 @@ class SignalTab(QWidget):
             metrics_layout.addWidget(widget)
         side_layout.addWidget(metrics_group)
 
+        spectrum_group = QGroupBox("Espectro da janela exibida")
+        spectrum_layout = QVBoxLayout(spectrum_group)
+        self.peak_frequency_label = QLabel("Pico: --")
+        self.peak_magnitude_label = QLabel("Magnitude do pico: --")
+        self.resolution_label = QLabel("Resolução: --")
+        for widget in (self.peak_frequency_label, self.peak_magnitude_label, self.resolution_label):
+            spectrum_layout.addWidget(widget)
+        side_layout.addWidget(spectrum_group)
+
         self.active_filters_label = QLabel("Filtros ativos: nenhum")
         self.active_filters_label.setWordWrap(True)
         self.filter_status_label = QLabel("Status: --")
@@ -124,6 +152,9 @@ class SignalTab(QWidget):
 
         self.raw_radio.toggled.connect(self._on_display_mode_toggled)
         self.processed_radio.toggled.connect(self._on_display_mode_toggled)
+        self.time_radio.toggled.connect(self._on_plot_domain_toggled)
+        self.spectrum_radio.toggled.connect(self._on_plot_domain_toggled)
+        self.toggle_spectrum_button.clicked.connect(self._toggle_spectrum)
 
     def _on_display_mode_toggled(self) -> None:
         mode = self.PROCESSED_MODE if self.processed_radio.isChecked() else self.RAW_MODE
@@ -131,8 +162,24 @@ class SignalTab(QWidget):
             return
         self.display_mode = mode
         self.display_mode_changed.emit(self.channel.index, mode)
+        self._redraw_last_snapshot()
+
+    def _on_plot_domain_toggled(self) -> None:
+        domain = self.SPECTRUM_DOMAIN if self.spectrum_radio.isChecked() else self.TIME_DOMAIN
+        if domain == self.plot_domain:
+            return
+        self.plot_domain = domain
+        self.toggle_spectrum_button.setText("Mostrar tempo" if domain == self.SPECTRUM_DOMAIN else "Mostrar espectro")
+        self._redraw_last_snapshot()
+
+    def _toggle_spectrum(self) -> None:
+        if self.plot_domain == self.TIME_DOMAIN:
+            self.spectrum_radio.setChecked(True)
+        else:
+            self.time_radio.setChecked(True)
 
     def update_from_snapshot(self, snapshot: ProcessedChannelSnapshot) -> None:
+        self._last_snapshot = snapshot
         self.sample_count_label.setText(f"Amostras: {snapshot.sample_count}")
 
         if snapshot.last_raw_value is None:
@@ -140,6 +187,7 @@ class SignalTab(QWidget):
             self.last_processed_value_label.setText("Último processado: --")
             self.last_time_label.setText("Último timestamp: --")
             self._update_metrics(snapshot)
+            self._update_spectrum_info(snapshot)
             self.plot.clear()
             return
 
@@ -163,11 +211,30 @@ class SignalTab(QWidget):
 
         self.filter_status_label.setText("Status: " + " | ".join(snapshot.filter_status))
         self._update_metrics(snapshot)
+        self._update_spectrum_info(snapshot)
+        self._draw_snapshot(snapshot)
+
+    def _redraw_last_snapshot(self) -> None:
+        if self._last_snapshot is not None:
+            self._update_spectrum_info(self._last_snapshot)
+            self._draw_snapshot(self._last_snapshot)
+
+    def _draw_snapshot(self, snapshot: ProcessedChannelSnapshot) -> None:
+        if self.plot_domain == self.SPECTRUM_DOMAIN:
+            spectrum = self._selected_spectrum(snapshot)
+            label = "espectro processado" if self.display_mode == self.PROCESSED_MODE else "espectro bruto"
+            self.plot.set_spectrum(spectrum, label)
+            return
 
         if self.display_mode == self.PROCESSED_MODE:
-            self.plot.set_series(snapshot.x_seconds, snapshot.processed_values, "processado")
+            self.plot.set_time_series(snapshot.x_seconds, snapshot.processed_values, "processado")
         else:
-            self.plot.set_series(snapshot.x_seconds, snapshot.raw_values, "bruto")
+            self.plot.set_time_series(snapshot.x_seconds, snapshot.raw_values, "bruto")
+
+    def _selected_spectrum(self, snapshot: ProcessedChannelSnapshot) -> SpectrumSnapshot:
+        if self.display_mode == self.PROCESSED_MODE:
+            return snapshot.processed_spectrum
+        return snapshot.raw_spectrum
 
     def _update_metrics(self, snapshot: ProcessedChannelSnapshot) -> None:
         metrics = snapshot.metrics
@@ -177,7 +244,28 @@ class SignalTab(QWidget):
         self.min_label.setText("Mínimo: --" if metrics.minimum is None else f"Mínimo: {metrics.minimum:g} {unit}")
         self.max_label.setText("Máximo: --" if metrics.maximum is None else f"Máximo: {metrics.maximum:g} {unit}")
 
+    def _update_spectrum_info(self, snapshot: ProcessedChannelSnapshot) -> None:
+        spectrum = self._selected_spectrum(snapshot)
+        if spectrum.peak_frequency_hz is None:
+            self.peak_frequency_label.setText("Pico: --")
+            self.peak_magnitude_label.setText("Magnitude do pico: --")
+            self.resolution_label.setText("Resolução: --")
+            return
+
+        self.peak_frequency_label.setText(f"Pico: {spectrum.peak_frequency_hz:g} Hz")
+        self.peak_magnitude_label.setText(
+            "Magnitude do pico: --"
+            if spectrum.peak_magnitude is None
+            else f"Magnitude do pico: {spectrum.peak_magnitude:g} {self.channel.unit}"
+        )
+        self.resolution_label.setText(
+            "Resolução: --"
+            if spectrum.resolution_hz is None
+            else f"Resolução: {spectrum.resolution_hz:g} Hz/bin"
+        )
+
     def clear(self) -> None:
+        self._last_snapshot = None
         self.plot.clear()
         self.sample_count_label.setText("Amostras: 0")
         self.last_raw_value_label.setText("Último bruto: --")
@@ -189,3 +277,6 @@ class SignalTab(QWidget):
         self.rms_label.setText("RMS: --")
         self.min_label.setText("Mínimo: --")
         self.max_label.setText("Máximo: --")
+        self.peak_frequency_label.setText("Pico: --")
+        self.peak_magnitude_label.setText("Magnitude do pico: --")
+        self.resolution_label.setText("Resolução: --")
