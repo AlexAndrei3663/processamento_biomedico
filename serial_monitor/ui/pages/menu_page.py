@@ -11,15 +11,15 @@ class MenuPage(QWidget):
         super().__init__()
 
         root = QVBoxLayout(self)
-        root.setAlignment(Qt.AlignCenter)
+        root.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.setSpacing(16)
 
         title = QLabel("Monitor de Sinais Biomédicos")
-        title.setAlignment(Qt.AlignCenter)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
 
         subtitle = QLabel("Sistema de aquisição, visualização e análise de sinais via microcontrolador")
-        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet("font-size: 13px;")
 
         self.start_button = QPushButton("Iniciar monitoramento")
@@ -40,8 +40,8 @@ class MenuPage(QWidget):
         root.addWidget(title)
         root.addWidget(subtitle)
         root.addSpacing(16)
-        root.addWidget(self.start_button, alignment=Qt.AlignCenter)
-        root.addWidget(self.config_button, alignment=Qt.AlignCenter)
-        root.addWidget(self.stored_button, alignment=Qt.AlignCenter)
-        root.addWidget(self.exit_button, alignment=Qt.AlignCenter)
+        root.addWidget(self.start_button, alignment=Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self.config_button, alignment=Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self.stored_button, alignment=Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self.exit_button, alignment=Qt.AlignmentFlag.AlignCenter)
         root.addStretch(2)
