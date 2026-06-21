@@ -64,8 +64,6 @@ def calculate_single_sided_spectrum(
     peak_frequency_hz: float | None = None
     peak_magnitude: float | None = None
     if magnitudes.size:
-        # Ignora o componente DC quando houver bins não nulos, pois a visualização
-        # de espectro é mais útil para identificar componentes oscilatórias.
         search_start = 1 if magnitudes.size > 1 else 0
         peak_index_relative = int(np.argmax(magnitudes[search_start:]))
         peak_index = peak_index_relative + search_start

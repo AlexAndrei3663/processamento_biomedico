@@ -30,3 +30,9 @@ class SignalType(str, Enum):
 
 class ProtocolMode(str, Enum):
     FRAME_CSV = "frame_csv"
+
+class WindowPageIndex(int, Enum):
+    MENU_PAGE = 0
+    CONFIG_PAGE = 1
+    LIVE_PAGE = 2
+    STORED_PAGE = 3

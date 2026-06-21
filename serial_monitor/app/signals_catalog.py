@@ -1,16 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict
 
 from serial_monitor.domain.enums import SignalType
-
-
-@dataclass(frozen=True, slots=True)
-class SignalPreset:
-    display_name: str
-    unit: str
-    default_filters: List[str]
+from serial_monitor.domain.models import SignalPreset
 
 
 SIGNAL_PRESETS: Dict[SignalType, SignalPreset] = {

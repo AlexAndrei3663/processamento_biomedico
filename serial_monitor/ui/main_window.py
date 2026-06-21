@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
 from serial_monitor.app.runtime_settings import RuntimeSettings
 from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, SessionConfig
+from serial_monitor.domain.enums import WindowPageIndex
 from serial_monitor.infrastructure.storage.config_repository import SessionPreset
 from serial_monitor.infrastructure.storage.session_repository import StoredSessionSummary
 from serial_monitor.ui.pages.config_page import ConfigPage
@@ -20,15 +21,10 @@ from serial_monitor.ui.pages.stored_page import StoredPage
 class MainWindow(QMainWindow):
     """Janela principal com navegação por páginas."""
 
-    MENU_PAGE = 0
-    CONFIG_PAGE = 1
-    LIVE_PAGE = 2
-    STORED_PAGE = 3
-
     def __init__(self, settings: RuntimeSettings | None = None) -> None:
         super().__init__()
         self.settings = settings or RuntimeSettings()
-        self.setWindowTitle("Serial Monitor - Etapa 9")
+        self.setWindowTitle("Monitor de Sinais Biomédicos")
         self.resize(1260, 820)
 
         self.stack = QStackedWidget()
@@ -48,38 +44,43 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.stored_page)
 
         self.show_menu()
-        self.statusBar().showMessage("Pronto")
+        self._show_status_message("Pronto")
+
+    def _show_status_message(self, message: str, timeout: int = 0) -> None:
+        status_bar = self.statusBar()
+        if status_bar is not None:
+            status_bar.showMessage(message, timeout)
 
     def show_menu(self) -> None:
-        self.stack.setCurrentIndex(self.MENU_PAGE)
-        self.statusBar().showMessage("Menu inicial")
+        self.stack.setCurrentIndex(WindowPageIndex.MENU_PAGE)
+        self._show_status_message("Menu inicial")
 
     def show_config(self) -> None:
-        self.stack.setCurrentIndex(self.CONFIG_PAGE)
-        self.statusBar().showMessage("Configuração da sessão")
+        self.stack.setCurrentIndex(WindowPageIndex.CONFIG_PAGE)
+        self._show_status_message("Configuração da sessão")
 
     def show_live(self) -> None:
-        self.stack.setCurrentIndex(self.LIVE_PAGE)
-        self.statusBar().showMessage("Visualização ao vivo")
+        self.stack.setCurrentIndex(WindowPageIndex.LIVE_PAGE)
+        self._show_status_message("Visualização ao vivo")
 
     def show_stored(self) -> None:
-        self.stack.setCurrentIndex(self.STORED_PAGE)
-        self.statusBar().showMessage("Sinais armazenados")
+        self.stack.setCurrentIndex(WindowPageIndex.STORED_PAGE)
+        self._show_status_message("Sinais armazenados")
 
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
-            self.statusBar().showMessage("Modo janela")
+            self._show_status_message("Modo janela")
         else:
             self.showFullScreen()
-            self.statusBar().showMessage("Modo tela cheia")
+            self._show_status_message("Modo tela cheia")
 
     def append_log(self, level: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{timestamp}] [{level}] {message}"
         self.config_page.log.append(line)
         self.live_page.log.append(line)
-        self.statusBar().showMessage(f"[{level}] {message}", 5000)
+        self._show_status_message(f"[{level}] {message}", 5000)
 
     def clear_logs(self) -> None:
         self.config_page.log.clear()
@@ -113,21 +114,24 @@ class MainWindow(QMainWindow):
     def apply_preset(self, preset: SessionPreset) -> None:
         self.config_page.apply_preset(preset)
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - método Qt
-        if event.key() == Qt.Key_F11:
-            self.toggle_fullscreen()
-            return
-        if event.key() == Qt.Key_Escape and self.isFullScreen():
-            self.showNormal()
-            return
-        super().keyPressEvent(event)
+    def keyPressEvent(self, a0: QKeyEvent | None) -> None:  # noqa: N802 - método Qt
+        if a0:
+            if a0.key() == Qt.Key.Key_F11:
+                self.toggle_fullscreen()
+                return
+            if a0.key() == Qt.Key.Key_Escape and self.isFullScreen():
+                self.showNormal()
+                return
+        super().keyPressEvent(a0)
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - método Qt
+    def closeEvent(self, a0: QCloseEvent | None) -> None:  # noqa: N802 - método Qt
         controller: Any = getattr(self, "controller", None)
         if controller is not None and hasattr(controller, "shutdown"):
             controller.shutdown()
-        event.accept()
+        if a0:
+            a0.accept()
 
+    # Atalhos usados pelo controlador para manter a leitura do código simples.
     @property
     def selected_preset_name(self) -> str | None:
         return self.config_page.selected_preset_name
@@ -140,10 +144,9 @@ class MainWindow(QMainWindow):
     def selected_stored_session_id(self) -> str | None:
         return self.stored_page.selected_session_id
 
-    # Atalhos usados pelo controlador para manter a leitura do código simples.
     @property
-    def port_text(self) -> str:
-        return self.config_page.port_input.text().strip()
+    def selected_port(self) -> str:
+        return self.config_page.selected_port or ""
 
     @property
     def baudrate_text(self) -> str:

@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QScrollArea,
 )
 
 from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, SessionConfig
@@ -33,7 +34,19 @@ class LivePage(QWidget):
         self.signal_tabs: Dict[int, SignalTab] = {}
         self.max_plot_points = max_plot_points
 
-        root = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        content_widget = QWidget()
+        root = QVBoxLayout(content_widget)
+
+        scroll_area.setWidget(content_widget)
+        outer_layout.addWidget(scroll_area)
 
         header = QHBoxLayout()
         self.title_label = QLabel("Visualização ao vivo")
@@ -82,7 +95,7 @@ class LivePage(QWidget):
         performance.addWidget(self.performance_hint_label)
         root.addLayout(performance)
 
-        splitter = QSplitter(Qt.Vertical)
+        splitter = QSplitter(Qt.Orientation.Vertical)
 
         live_group = QGroupBox("Sinais")
         live_layout = QVBoxLayout(live_group)

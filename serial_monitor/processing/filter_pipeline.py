@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Set
+from typing import Dict, Iterable, List, Set
 
 import numpy as np
 from scipy import signal
@@ -15,16 +14,9 @@ from serial_monitor.domain.models import (
     ProcessedChannelSnapshot,
     SessionConfig,
     SignalChannelConfig,
+    FilterDefinition,
 )
 from serial_monitor.processing.spectrum import calculate_single_sided_spectrum
-
-
-@dataclass(frozen=True, slots=True)
-class FilterDefinition:
-    filter_id: str
-    display_name: str
-    description: str
-    processor: Callable[[np.ndarray, float, SignalChannelConfig], np.ndarray]
 
 
 def _as_float_array(values: np.ndarray) -> np.ndarray:

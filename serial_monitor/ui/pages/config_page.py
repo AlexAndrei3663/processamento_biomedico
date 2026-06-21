@@ -34,11 +34,11 @@ class ConfigPage(QWidget):
 
         form = QFormLayout()
         port_line = QHBoxLayout()
-        self.port_input = QLineEdit()
-        self.port_input.setPlaceholderText("/dev/ttyUSB0 ou COM3")
+        self.port_selector = QComboBox()
+        self.port_selector.setPlaceholderText("Selecione a porta")
         self.refresh_ports_button = QPushButton("Atualizar portas")
-        port_line.addWidget(self.port_input)
-        port_line.addWidget(self.refresh_ports_button)
+        port_line.addWidget(self.port_selector, stretch=3)
+        port_line.addWidget(self.refresh_ports_button, stretch=1)
 
         self.baudrate_input = QLineEdit("115200")
         self.sample_rate_input = QLineEdit("1000")
@@ -121,6 +121,14 @@ class ConfigPage(QWidget):
         self.refresh_ports()
 
     @property
+    def selected_port(self) -> str | None:
+        value = self.port_selector.currentData()
+        if value:
+            return str(value)
+        text = self.port_selector.currentText().strip()
+        return text or None
+
+    @property
     def selected_preset_name(self) -> str | None:
         value = self.preset_selector.currentData()
         if value:
@@ -140,17 +148,27 @@ class ConfigPage(QWidget):
 
     def apply_preset(self, preset: SessionPreset) -> None:
         self.preset_name_input.setText(preset.name)
-        self.port_input.setText(preset.port)
+        self.port_selector.setCurrentText(preset.port)
         self.baudrate_input.setText(str(preset.baudrate))
         self.sample_rate_input.setText(str(preset.base_sample_rate_hz))
         self.window_size_input.setText(str(preset.window_size))
         self.signal_order_input.setText(preset.signal_order_text)
 
     def refresh_ports(self) -> None:
-        ports = list(serial.tools.list_ports.comports())
-        current = self.port_input.text().strip()
-        devices = [port.device for port in ports]
-        if not devices:
-            return
-        if not current or current not in devices:
-            self.port_input.setText(devices[0])
+        ports = serial.tools.list_ports.comports()
+        current = self.port_selector.currentText()
+
+        self.port_selector.clear()
+        for port in ports:
+            self.port_selector.addItem(port.device, port.device)
+        
+        if current:
+            index = self.port_selector.findData(current)
+            if index >= 0:
+                self.port_selector.setCurrentIndex(index)
+
+
+    def append_log(self, level: str, message: str) -> None:
+        line = f"[{level}] {message}"
+        self.log.append(line)
+        print(line, flush=True)

@@ -2,24 +2,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import List
 
-
-@dataclass(frozen=True, slots=True)
-class SessionPreset:
-    name: str
-    created_at: str
-    updated_at: str
-    port: str
-    baudrate: int
-    base_sample_rate_hz: int
-    window_size: int
-    signal_order_text: str
-    path: Path
-
+from serial_monitor.domain.models import SessionPreset
 
 class ConfigRepository:
     """Persistência simples de presets de configuração da sessão.
@@ -125,6 +112,6 @@ class ConfigRepository:
             baudrate=int(payload.get("baudrate", 115200)),
             base_sample_rate_hz=int(payload.get("base_sample_rate_hz", 1000)),
             window_size=int(payload.get("window_size", 1000)),
-            signal_order_text=str(payload.get("signal_order_text", "ecg,ppg,oximetria")),
+            signal_order_text=str(payload.get("signal_order_text", "")),
             path=path,
         )

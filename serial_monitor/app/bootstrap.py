@@ -20,7 +20,7 @@ from serial_monitor.ui.main_window import MainWindow
 
 from serial_monitor.domain.models import SampleFrame
 
-class StageNineController(QObject):
+class MainController(QObject):
     """Controlador da navegação, aquisição, processamento, armazenamento, presets e execução em Raspberry Pi."""
 
     def __init__(
@@ -56,7 +56,7 @@ class StageNineController(QObject):
         self._connect_signals()
         self.refresh_presets()
         self.refresh_stored_sessions()
-        self.log("INFO", "Controlador inicializado. Etapa 9: preparação para Raspberry Pi e acabamento.")
+        self.log("INFO", "Controlador inicializado.")
         self._log_startup_report()
 
     def _connect_signals(self) -> None:
@@ -71,38 +71,38 @@ class StageNineController(QObject):
         menu.exit_button.clicked.connect(self.close_application)
 
         config.validate_button.clicked.connect(self.validate_session)
-        config.validate_frame_button.clicked.connect(self.validate_sample_frame)
-        config.ingest_frame_button.clicked.connect(self.ingest_sample_frame)
-        config.clear_buffers_button.clicked.connect(self.clear_buffers)
         config.go_live_button.clicked.connect(self.go_live_from_config)
         config.back_menu_button.clicked.connect(self.window.show_menu)
-        config.clear_log_button.clicked.connect(self.window.clear_logs)
         config.save_preset_button.clicked.connect(self.save_config_preset)
         config.load_preset_button.clicked.connect(self.load_config_preset)
         config.delete_preset_button.clicked.connect(self.delete_config_preset)
         config.refresh_presets_button.clicked.connect(self.refresh_presets)
+        config.validate_frame_button.clicked.connect(self.validate_sample_frame)
+        config.ingest_frame_button.clicked.connect(self.ingest_sample_frame)
+        config.clear_buffers_button.clicked.connect(self.clear_buffers)
+        config.clear_log_button.clicked.connect(self.window.clear_logs)
 
+        live.open_config_button.clicked.connect(self.window.show_config)
+        live.open_stored_button.clicked.connect(self.open_stored_page)
+        live.fullscreen_requested.connect(self.window.toggle_fullscreen)
+        live.back_menu_button.clicked.connect(self.window.show_menu)
         live.connect_button.clicked.connect(self.connect_serial)
         live.disconnect_button.clicked.connect(self.disconnect_serial)
         live.clear_buffers_button.clicked.connect(self.clear_buffers)
         live.save_session_button.clicked.connect(self.save_current_session)
         live.clear_log_button.clicked.connect(self.window.clear_logs)
-        live.open_config_button.clicked.connect(self.window.show_config)
-        live.open_stored_button.clicked.connect(self.open_stored_page)
-        live.back_menu_button.clicked.connect(self.window.show_menu)
+        live.update_interval_changed.connect(self.update_view_interval)
         live.filter_toggled.connect(self.on_filter_toggled)
         live.display_mode_changed.connect(self.on_display_mode_changed)
-        live.update_interval_changed.connect(self.update_view_interval)
-        live.fullscreen_requested.connect(self.window.toggle_fullscreen)
 
-        stored.back_menu_button.clicked.connect(self.window.show_menu)
         stored.open_config_button.clicked.connect(self.window.show_config)
         stored.open_live_button.clicked.connect(self.go_live_from_config)
+        stored.back_menu_button.clicked.connect(self.window.show_menu)
+        stored.sessions_list.currentItemChanged.connect(lambda *_: self.update_selected_stored_details())
         stored.refresh_button.clicked.connect(self.refresh_stored_sessions)
         stored.open_selected_button.clicked.connect(self.open_selected_stored_session)
         stored.export_csv_button.clicked.connect(self.export_selected_session_csv)
         stored.delete_selected_button.clicked.connect(self.delete_selected_stored_session)
-        stored.sessions_list.currentItemChanged.connect(lambda *_: self.update_selected_stored_details())
 
         self.serial_reader.frame_received.connect(self.on_frame_received)
         self.serial_reader.error_occurred.connect(self.on_error)
@@ -192,7 +192,7 @@ class StageNineController(QObject):
         try:
             preset = self.config_repository.save_preset(
                 name=self.window.preset_name_text,
-                port=self.window.port_text,
+                port=self.window.selected_port,
                 baudrate=self._parse_positive_int(self.window.baudrate_text, "Baudrate"),
                 base_sample_rate_hz=self._parse_positive_int(self.window.sample_rate_text, "Taxa base"),
                 window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
@@ -262,10 +262,10 @@ class StageNineController(QObject):
                 return
 
     @pyqtSlot()
-    def validate_session(self) -> bool:
+    def validate_session(self) -> None:
         try:
             self._session = self.session_service.build_session(
-                port=self.window.port_text,
+                port=self.window.selected_port,
                 baudrate=self._parse_positive_int(self.window.baudrate_text, "Baudrate"),
                 base_sample_rate_hz=self._parse_positive_int(self.window.sample_rate_text, "Taxa base"),
                 window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
@@ -281,13 +281,13 @@ class StageNineController(QObject):
             self._stored_raw_snapshot = None
             self.log("ERRO", str(exc))
             self.refresh_live_view(force=True)
-            return False
+            return
         except Exception as exc:
             self._session = None
             self._stored_raw_snapshot = None
             self.log("ERRO", f"Falha inesperada ao validar sessão: {exc}")
             self.refresh_live_view(force=True)
-            return False
+            return
 
         ordered_signals = ", ".join(
             f"{channel.index}:{channel.signal_type.value}" for channel in self._session.channels
@@ -301,7 +301,6 @@ class StageNineController(QObject):
             ),
         )
         self.refresh_live_view(force=True)
-        return True
 
     @pyqtSlot()
     def validate_sample_frame(self) -> None:
@@ -557,7 +556,7 @@ def run() -> int:
     app = QApplication([sys.argv[0]])
     window = MainWindow(settings)
 
-    controller = StageNineController(
+    controller = MainController(
         window=window,
         session_service=SessionService(),
         serial_reader=SerialReader(),

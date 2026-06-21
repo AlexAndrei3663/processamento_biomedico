@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Callable
+from pathlib import Path
 
 import numpy as np
 
@@ -143,3 +144,53 @@ class ProcessedAcquisitionSnapshot:
     last_sequence_id: int | None
     last_timestamp_ms: int | None
     channels: Dict[int, ProcessedChannelSnapshot]
+
+@dataclass(frozen=True, slots=True)
+class StoredSessionSummary:
+    session_id: str
+    created_at: str
+    frames_received: int
+    sequence_gaps: int
+    channel_count: int
+    base_sample_rate_hz: int
+    channel_labels: List[str]
+    metadata_path: Path
+    data_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class StoredSessionData:
+    summary: StoredSessionSummary
+    session: SessionConfig
+    snapshot: AcquisitionSnapshot
+    active_filters: Dict[int, List[str]]
+
+@dataclass(frozen=True, slots=True)
+class FilterDefinition:
+    filter_id: str
+    display_name: str
+    description: str
+    processor: Callable[[np.ndarray, float, SignalChannelConfig], np.ndarray]
+
+
+@dataclass(frozen=True, slots=True)
+class SessionPreset:
+    name: str
+    created_at: str
+    updated_at: str
+    port: str
+    baudrate: int
+    base_sample_rate_hz: int
+    window_size: int
+    signal_order_text: str
+    path: Path
+
+@dataclass(frozen=True, slots=True)
+class ParsedFrame:
+    frame: SampleFrame
+
+@dataclass(frozen=True, slots=True)
+class SignalPreset:
+    display_name: str
+    unit: str
+    default_filters: List[str]

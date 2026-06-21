@@ -21,7 +21,7 @@ from serial_monitor.infrastructure.storage.session_repository import StoredSessi
 class StoredPage(QWidget):
     """Página de listagem, abertura, exportação e exclusão de sessões armazenadas."""
 
-    SESSION_ID_ROLE = Qt.UserRole + 1
+    SESSION_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 
     def __init__(self) -> None:
         super().__init__()

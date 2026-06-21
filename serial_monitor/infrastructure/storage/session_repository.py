@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
@@ -15,34 +14,15 @@ from serial_monitor.domain.models import (
     ChannelBufferSnapshot,
     SessionConfig,
     SignalChannelConfig,
+    StoredSessionSummary,
+    StoredSessionData
 )
-
-
-@dataclass(frozen=True, slots=True)
-class StoredSessionSummary:
-    session_id: str
-    created_at: str
-    frames_received: int
-    sequence_gaps: int
-    channel_count: int
-    base_sample_rate_hz: int
-    channel_labels: List[str]
-    metadata_path: Path
-    data_path: Path
-
-
-@dataclass(frozen=True, slots=True)
-class StoredSessionData:
-    summary: StoredSessionSummary
-    session: SessionConfig
-    snapshot: AcquisitionSnapshot
-    active_filters: Dict[int, List[str]]
 
 
 class SessionRepository:
     """Repositório de sessões salvas em disco.
 
-    A etapa 7 usa dois arquivos por sessão:
+    Usa dois arquivos por sessão:
     - JSON: metadados legíveis e indexáveis;
     - NPZ: arrays NumPy com valores, timestamps e sequências de cada canal.
     """
@@ -110,8 +90,7 @@ class SessionRepository:
                 if summary.data_path.exists():
                     summaries.append(summary)
             except Exception:
-                # Arquivos corrompidos ou incompletos são ignorados na listagem.
-                continue
+                continue # Arquivos corrompidos ou incompletos são ignorados na listagem.
 
         return sorted(summaries, key=lambda item: item.created_at, reverse=True)
 

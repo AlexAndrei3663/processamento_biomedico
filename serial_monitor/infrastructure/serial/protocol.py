@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import List
 
-from serial_monitor.domain.models import SampleFrame, SessionConfig
+from serial_monitor.domain.models import (
+    SampleFrame, 
+    SessionConfig, 
+    ParsedFrame
+)
 
 
 class FrameProtocolError(ValueError):
     """Erro de protocolo serial."""
-
-
-@dataclass(frozen=True, slots=True)
-class ParsedFrame:
-    frame: SampleFrame
-
 
 class FrameCsvParser:
     """Parser do protocolo textual oficial.
