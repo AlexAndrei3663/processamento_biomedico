@@ -164,12 +164,28 @@ class LivePage(QWidget):
             self.buffer_summary.setPlainText("Aquisição ainda não configurada.")
             return
 
+        stats = snapshot.communication
         lines = [
             f"Estado: {'rodando' if snapshot.running else 'parada'}",
-            f"Frames recebidos: {snapshot.frames_received}",
-            f"Gaps de sequência detectados: {snapshot.sequence_gaps}",
-            f"Último seq: {snapshot.last_sequence_id}",
-            f"Último timestamp_ms: {snapshot.last_timestamp_ms}",
+            f"Frames válidos: {stats.valid_frames}",
+            f"Frames inválidos: {stats.invalid_frames}",
+            f"Erros de checksum: {stats.checksum_errors}",
+            f"Timestamps não crescentes: {stats.timestamp_regressions}",
+            "",
+            "Sequência de pacotes:",
+            f"  gaps={stats.packet_sequence.gap_events}",
+            f"  ausentes={stats.packet_sequence.missing_items}",
+            f"  duplicados={stats.packet_sequence.duplicate_items}",
+            f"  fora de ordem={stats.packet_sequence.out_of_order_items}",
+            "Sequência de varreduras:",
+            f"  gaps={stats.scan_sequence.gap_events}",
+            f"  ausentes={stats.scan_sequence.missing_items}",
+            f"  duplicados={stats.scan_sequence.duplicate_items}",
+            f"  fora de ordem={stats.scan_sequence.out_of_order_items}",
+            "",
+            f"Último packet_seq: {snapshot.last_packet_sequence}",
+            f"Último scan_seq: {snapshot.last_scan_sequence}",
+            f"Último timestamp_us: {snapshot.last_timestamp_us}",
             "",
             "Canais:",
         ]

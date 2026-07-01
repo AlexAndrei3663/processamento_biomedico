@@ -44,7 +44,7 @@ def test_processing_snapshot_contains_raw_and_processed_spectra() -> None:
     parser = FrameCsvParser()
     for sequence_id in range(1, 33):
         value = float(np.sin(2 * np.pi * 10 * sequence_id / 1000.0))
-        acquisition.ingest_frame(parser.parse_line(f"FRAME,{sequence_id},{sequence_id},{value}", session).frame)
+        acquisition.ingest_frame(parser.parse_line(f"FRAME,{sequence_id},{sequence_id},{sequence_id * 1000},{value}", session).frame)
 
     processor = ProcessingService()
     processor.configure(session)

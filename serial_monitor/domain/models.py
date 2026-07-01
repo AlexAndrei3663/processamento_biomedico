@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Callable
 from pathlib import Path
+from typing import Callable, Dict, List
 
 import numpy as np
 
@@ -65,10 +65,67 @@ class SessionConfig:
             raise ValueError(f"Canal de índice {index} não existe na sessão.") from exc
 
 
+@dataclass(frozen=True, slots=True)
+class SequenceDiagnostics:
+    """Diagnóstico de um contador sequencial com aritmética modular."""
+
+    gap_events: int = 0
+    missing_items: int = 0
+    duplicate_items: int = 0
+    out_of_order_items: int = 0
+
+    @property
+    def anomaly_count(self) -> int:
+        return self.gap_events + self.duplicate_items + self.out_of_order_items
+
+
+@dataclass(frozen=True, slots=True)
+class CommunicationStats:
+    """Contadores de integridade da comunicação durante a sessão.
+
+    ``valid_frames`` conta somente quadros aceitos pelo modelo de aquisição. Quadros
+    duplicados, fora de ordem ou com timestamp não crescente são contabilizados, mas
+    não são inseridos nos buffers de visualização.
+    """
+
+    valid_frames: int = 0
+    invalid_frames: int = 0
+    checksum_errors: int = 0
+    timestamp_regressions: int = 0
+    packet_sequence: SequenceDiagnostics = field(default_factory=SequenceDiagnostics)
+    scan_sequence: SequenceDiagnostics = field(default_factory=SequenceDiagnostics)
+
+    @property
+    def gap_events(self) -> int:
+        return self.packet_sequence.gap_events
+
+    @property
+    def missing_frames(self) -> int:
+        return self.packet_sequence.missing_items
+
+    @property
+    def duplicate_frames(self) -> int:
+        return self.packet_sequence.duplicate_items
+
+    @property
+    def out_of_order_frames(self) -> int:
+        return self.packet_sequence.out_of_order_items
+
+
 @dataclass(slots=True)
 class SampleFrame:
-    sequence_id: int
-    timestamp_ms: int
+    """Um quadro multicanal correspondente a um ciclo de varredura.
+
+    ``packet_sequence`` identifica o pacote transmitido. ``scan_sequence`` identifica
+    o ciclo de aquisição multicanal. Nesta versão textual há um ciclo por pacote, mas os
+    contadores permanecem separados para permitir lotes e mensagens assíncronas depois.
+    ``timestamp_us`` é gerado pelo STM32 e representa o instante da primeira conversão
+    do ciclo, em microssegundos desde o boot do firmware.
+    """
+
+    packet_sequence: int
+    scan_sequence: int
+    timestamp_us: int
     values_by_channel_index: Dict[int, float]
     values_in_order: List[float]
 
@@ -82,21 +139,26 @@ class ChannelBufferSnapshot:
     sample_count: int
     x_seconds: np.ndarray
     values: np.ndarray
-    timestamps_ms: np.ndarray
-    sequence_ids: np.ndarray
+    timestamps_us: np.ndarray
+    packet_sequences: np.ndarray
+    scan_sequences: np.ndarray
     last_value: float | None
-    last_timestamp_ms: int | None
+    last_timestamp_us: int | None
 
 
 @dataclass(slots=True)
 class AcquisitionSnapshot:
     configured: bool
     running: bool
-    frames_received: int
-    sequence_gaps: int
-    last_sequence_id: int | None
-    last_timestamp_ms: int | None
+    communication: CommunicationStats
+    last_packet_sequence: int | None
+    last_scan_sequence: int | None
+    last_timestamp_us: int | None
     channels: Dict[int, ChannelBufferSnapshot]
+
+    @property
+    def frames_received(self) -> int:
+        return self.communication.valid_frames
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,11 +185,12 @@ class ProcessedChannelSnapshot:
     x_seconds: np.ndarray
     raw_values: np.ndarray
     processed_values: np.ndarray
-    timestamps_ms: np.ndarray
-    sequence_ids: np.ndarray
+    timestamps_us: np.ndarray
+    packet_sequences: np.ndarray
+    scan_sequences: np.ndarray
     last_raw_value: float | None
     last_processed_value: float | None
-    last_timestamp_ms: int | None
+    last_timestamp_us: int | None
     active_filters: List[str]
     filter_status: List[str]
     metrics: MetricSnapshot
@@ -139,18 +202,28 @@ class ProcessedChannelSnapshot:
 class ProcessedAcquisitionSnapshot:
     configured: bool
     running: bool
-    frames_received: int
-    sequence_gaps: int
-    last_sequence_id: int | None
-    last_timestamp_ms: int | None
+    communication: CommunicationStats
+    last_packet_sequence: int | None
+    last_scan_sequence: int | None
+    last_timestamp_us: int | None
     channels: Dict[int, ProcessedChannelSnapshot]
+
+    @property
+    def frames_received(self) -> int:
+        return self.communication.valid_frames
+
 
 @dataclass(frozen=True, slots=True)
 class StoredSessionSummary:
     session_id: str
     created_at: str
     frames_received: int
-    sequence_gaps: int
+    gap_events: int
+    missing_frames: int
+    duplicate_frames: int
+    out_of_order_frames: int
+    invalid_frames: int
+    timestamp_regressions: int
     channel_count: int
     base_sample_rate_hz: int
     channel_labels: List[str]
@@ -164,6 +237,7 @@ class StoredSessionData:
     session: SessionConfig
     snapshot: AcquisitionSnapshot
     active_filters: Dict[int, List[str]]
+
 
 @dataclass(frozen=True, slots=True)
 class FilterDefinition:
@@ -185,9 +259,11 @@ class SessionPreset:
     signal_order_text: str
     path: Path
 
+
 @dataclass(frozen=True, slots=True)
 class ParsedFrame:
     frame: SampleFrame
+
 
 @dataclass(frozen=True, slots=True)
 class SignalPreset:

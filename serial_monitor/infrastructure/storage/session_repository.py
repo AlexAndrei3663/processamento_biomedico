@@ -4,7 +4,7 @@ import csv
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, cast
 
 import numpy as np
 
@@ -12,23 +12,22 @@ from serial_monitor.domain.enums import ProtocolMode, SignalType
 from serial_monitor.domain.models import (
     AcquisitionSnapshot,
     ChannelBufferSnapshot,
+    CommunicationStats,
+    SequenceDiagnostics,
     SessionConfig,
     SignalChannelConfig,
+    StoredSessionData,
     StoredSessionSummary,
-    StoredSessionData
 )
 
 
 class SessionRepository:
-    """Repositório de sessões salvas em disco.
-
-    Usa dois arquivos por sessão:
-    - JSON: metadados legíveis e indexáveis;
-    - NPZ: arrays NumPy com valores, timestamps e sequências de cada canal.
+    """Repositório de sessões em JSON + NPZ.
     """
 
     METADATA_SUFFIX = ".json"
     DATA_SUFFIX = ".npz"
+    FORMAT_VERSION = 2
 
     def __init__(self, base_dir: str | Path = "data/sessions") -> None:
         self.base_dir = Path(base_dir)
@@ -52,29 +51,35 @@ class SessionRepository:
         metadata_path = self.base_dir / f"{session_id}{self.METADATA_SUFFIX}"
         data_path = self.base_dir / f"{session_id}{self.DATA_SUFFIX}"
 
-        active_filters = active_filters or {}
         metadata = self._build_metadata(
             session_id=session_id,
             created_at=now.isoformat(timespec="seconds"),
             session=session,
             snapshot=snapshot,
-            active_filters=active_filters,
+            active_filters=active_filters or {},
             data_filename=data_path.name,
         )
 
         arrays: Dict[str, np.ndarray] = {}
         for channel_index, channel_snapshot in snapshot.channels.items():
-            arrays[f"ch{channel_index}_values"] = np.asarray(channel_snapshot.values, dtype=float)
-            arrays[f"ch{channel_index}_timestamps_ms"] = np.asarray(
-                channel_snapshot.timestamps_ms,
-                dtype=np.int64,
+            arrays[f"ch{channel_index}_values"] = np.asarray(
+                channel_snapshot.values,
+                dtype=float,
             )
-            arrays[f"ch{channel_index}_sequence_ids"] = np.asarray(
-                channel_snapshot.sequence_ids,
-                dtype=np.int64,
+            arrays[f"ch{channel_index}_timestamps_us"] = np.asarray(
+                channel_snapshot.timestamps_us,
+                dtype=np.uint64,
+            )
+            arrays[f"ch{channel_index}_packet_sequences"] = np.asarray(
+                channel_snapshot.packet_sequences,
+                dtype=np.uint32,
+            )
+            arrays[f"ch{channel_index}_scan_sequences"] = np.asarray(
+                channel_snapshot.scan_sequences,
+                dtype=np.uint32,
             )
 
-        np.savez_compressed(data_path, allow_pickle=False, **arrays)
+        cast(Any, np.savez_compressed)(data_path, **arrays)
         metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
         return self._summary_from_metadata(metadata, metadata_path)
 
@@ -90,8 +95,7 @@ class SessionRepository:
                 if summary.data_path.exists():
                     summaries.append(summary)
             except Exception:
-                continue # Arquivos corrompidos ou incompletos são ignorados na listagem.
-
+                continue
         return sorted(summaries, key=lambda item: item.created_at, reverse=True)
 
     def load(self, session_id: str) -> StoredSessionData:
@@ -100,6 +104,12 @@ class SessionRepository:
             raise FileNotFoundError(f"Metadados da sessão não encontrados: {metadata_path}")
 
         metadata = self._read_metadata(metadata_path)
+        if int(metadata.get("version", 0)) != self.FORMAT_VERSION:
+            raise ValueError(
+                "Versão de sessão incompatível com a atual. "
+                f"Esperado {self.FORMAT_VERSION}, recebido {metadata.get('version')}."
+            )
+
         summary = self._summary_from_metadata(metadata, metadata_path)
         if not summary.data_path.exists():
             raise FileNotFoundError(f"Dados da sessão não encontrados: {summary.data_path}")
@@ -110,48 +120,60 @@ class SessionRepository:
             for index, filters in metadata.get("active_filters", {}).items()
         }
 
-        with np.load(summary.data_path) as data:
+        with np.load(summary.data_path, allow_pickle=False) as data:
             channel_snapshots: Dict[int, ChannelBufferSnapshot] = {}
             for channel in session.channels:
-                values = np.asarray(data.get(f"ch{channel.index}_values", np.array([], dtype=float)), dtype=float)
-                timestamps_ms = np.asarray(
-                    data.get(f"ch{channel.index}_timestamps_ms", np.array([], dtype=np.int64)),
-                    dtype=np.int64,
+                prefix = f"ch{channel.index}"
+                values = np.asarray(data.get(f"{prefix}_values", np.array([], dtype=float)), dtype=float)
+                timestamps_us = np.asarray(
+                    data.get(f"{prefix}_timestamps_us", np.array([], dtype=np.uint64)),
+                    dtype=np.uint64,
                 )
-                sequence_ids = np.asarray(
-                    data.get(f"ch{channel.index}_sequence_ids", np.array([], dtype=np.int64)),
-                    dtype=np.int64,
+                packet_sequences = np.asarray(
+                    data.get(f"{prefix}_packet_sequences", np.array([], dtype=np.uint32)),
+                    dtype=np.uint32,
                 )
-                if len(timestamps_ms) and len(values) == len(timestamps_ms):
-                    x_seconds = (timestamps_ms - timestamps_ms[0]) / 1000.0
+                scan_sequences = np.asarray(
+                    data.get(f"{prefix}_scan_sequences", np.array([], dtype=np.uint32)),
+                    dtype=np.uint32,
+                )
+
+                lengths = {len(values), len(timestamps_us), len(packet_sequences), len(scan_sequences)}
+                if len(lengths) != 1:
+                    raise ValueError(f"Arrays inconsistentes no canal {channel.index}.")
+
+                if len(values):
+                    x_seconds = (
+                        timestamps_us.astype(np.float64) - float(timestamps_us[0])
+                    ) / 1_000_000.0
                     last_value = float(values[-1])
-                    last_timestamp_ms = int(timestamps_ms[-1])
+                    last_timestamp_us = int(timestamps_us[-1])
                 else:
                     x_seconds = np.array([], dtype=float)
                     last_value = None
-                    last_timestamp_ms = None
+                    last_timestamp_us = None
 
                 channel_snapshots[channel.index] = ChannelBufferSnapshot(
                     channel=channel,
                     sample_count=int(len(values)),
                     x_seconds=x_seconds,
                     values=values,
-                    timestamps_ms=timestamps_ms,
-                    sequence_ids=sequence_ids,
+                    timestamps_us=timestamps_us,
+                    packet_sequences=packet_sequences,
+                    scan_sequences=scan_sequences,
                     last_value=last_value,
-                    last_timestamp_ms=last_timestamp_ms,
+                    last_timestamp_us=last_timestamp_us,
                 )
 
         snapshot = AcquisitionSnapshot(
             configured=True,
             running=False,
-            frames_received=int(metadata.get("frames_received", 0)),
-            sequence_gaps=int(metadata.get("sequence_gaps", 0)),
-            last_sequence_id=metadata.get("last_sequence_id"),
-            last_timestamp_ms=metadata.get("last_timestamp_ms"),
+            communication=self._communication_from_metadata(metadata),
+            last_packet_sequence=metadata.get("last_packet_sequence"),
+            last_scan_sequence=metadata.get("last_scan_sequence"),
+            last_timestamp_us=metadata.get("last_timestamp_us"),
             channels=channel_snapshots,
         )
-
         return StoredSessionData(
             summary=summary,
             session=session,
@@ -159,14 +181,9 @@ class SessionRepository:
             active_filters=active_filters,
         )
 
-
     def export_csv(self, session_id: str, output_path: str | Path | None = None) -> Path:
-        """Exporta uma sessão salva para CSV em formato tabular.
+        """Exporta o snapshot salvo no formato tabular provisório da Etapa 12."""
 
-        O CSV contém uma linha por amostra e colunas independentes por canal:
-        ``timestamp_ms``, ``sequence_id`` e ``chN_<tipo>_<unidade>``.
-        Para sessões com canais de tamanhos diferentes, as linhas faltantes ficam vazias.
-        """
         stored = self.load(session_id)
         if output_path is None:
             output_path = self.base_dir / f"{session_id}.csv"
@@ -184,11 +201,14 @@ class SessionRepository:
             signal = channel.signal_type.value
             unit = channel.unit.replace(" ", "_") or "value"
             prefix = f"ch{channel.index}_{signal}"
-            header.extend([
-                f"{prefix}_timestamp_ms",
-                f"{prefix}_sequence_id",
-                f"{prefix}_{unit}",
-            ])
+            header.extend(
+                [
+                    f"{prefix}_timestamp_us",
+                    f"{prefix}_packet_sequence",
+                    f"{prefix}_scan_sequence",
+                    f"{prefix}_{unit}",
+                ]
+            )
 
         with output_path.open("w", newline="", encoding="utf-8") as fp:
             writer = csv.writer(fp)
@@ -197,19 +217,20 @@ class SessionRepository:
                 row: list[object] = [row_index]
                 for channel_snapshot in channels:
                     if row_index < channel_snapshot.sample_count:
-                        row.extend([
-                            int(channel_snapshot.timestamps_ms[row_index]),
-                            int(channel_snapshot.sequence_ids[row_index]),
-                            float(channel_snapshot.values[row_index]),
-                        ])
+                        row.extend(
+                            [
+                                int(channel_snapshot.timestamps_us[row_index]),
+                                int(channel_snapshot.packet_sequences[row_index]),
+                                int(channel_snapshot.scan_sequences[row_index]),
+                                float(channel_snapshot.values[row_index]),
+                            ]
+                        )
                     else:
-                        row.extend(["", "", ""])
+                        row.extend(["", "", "", ""])
                 writer.writerow(row)
-
         return output_path
 
     def delete(self, session_id: str) -> None:
-        """Remove os arquivos JSON, NPZ e CSV associado, se existir."""
         metadata_path = self.base_dir / f"{session_id}{self.METADATA_SUFFIX}"
         data_path: Path | None = None
         if metadata_path.exists():
@@ -244,15 +265,21 @@ class SessionRepository:
         active_filters: Dict[int, List[str]],
         data_filename: str,
     ) -> dict:
+        communication = snapshot.communication
         return {
-            "version": 1,
+            "version": self.FORMAT_VERSION,
             "session_id": session_id,
             "created_at": created_at,
             "data_filename": data_filename,
-            "frames_received": snapshot.frames_received,
-            "sequence_gaps": snapshot.sequence_gaps,
-            "last_sequence_id": snapshot.last_sequence_id,
-            "last_timestamp_ms": snapshot.last_timestamp_ms,
+            "protocol_contract": {
+                "packet_sequence": "uint32; incremento por pacote; wrap em 2^32; reinício no boot",
+                "scan_sequence": "uint32; incremento por ciclo multicanal; wrap em 2^32; reinício no boot",
+                "timestamp_us": "uint64; microssegundos desde o boot; primeira conversão do ciclo",
+            },
+            "communication": self._communication_to_dict(communication),
+            "last_packet_sequence": snapshot.last_packet_sequence,
+            "last_scan_sequence": snapshot.last_scan_sequence,
+            "last_timestamp_us": snapshot.last_timestamp_us,
             "active_filters": {str(index): list(filters) for index, filters in active_filters.items()},
             "session": {
                 "port": session.port,
@@ -279,7 +306,49 @@ class SessionRepository:
             },
         }
 
-    def _read_metadata(self, metadata_path: Path) -> dict:
+    @staticmethod
+    def _communication_to_dict(stats: CommunicationStats) -> dict:
+        def sequence_dict(sequence: SequenceDiagnostics) -> dict:
+            return {
+                "gap_events": sequence.gap_events,
+                "missing_items": sequence.missing_items,
+                "duplicate_items": sequence.duplicate_items,
+                "out_of_order_items": sequence.out_of_order_items,
+            }
+
+        return {
+            "valid_frames": stats.valid_frames,
+            "invalid_frames": stats.invalid_frames,
+            "checksum_errors": stats.checksum_errors,
+            "timestamp_regressions": stats.timestamp_regressions,
+            "packet_sequence": sequence_dict(stats.packet_sequence),
+            "scan_sequence": sequence_dict(stats.scan_sequence),
+        }
+
+    @staticmethod
+    def _communication_from_metadata(metadata: dict) -> CommunicationStats:
+        communication = metadata.get("communication", {})
+
+        def parse_sequence(name: str) -> SequenceDiagnostics:
+            source = communication.get(name, {})
+            return SequenceDiagnostics(
+                gap_events=int(source.get("gap_events", 0)),
+                missing_items=int(source.get("missing_items", 0)),
+                duplicate_items=int(source.get("duplicate_items", 0)),
+                out_of_order_items=int(source.get("out_of_order_items", 0)),
+            )
+
+        return CommunicationStats(
+            valid_frames=int(communication.get("valid_frames", 0)),
+            invalid_frames=int(communication.get("invalid_frames", 0)),
+            checksum_errors=int(communication.get("checksum_errors", 0)),
+            timestamp_regressions=int(communication.get("timestamp_regressions", 0)),
+            packet_sequence=parse_sequence("packet_sequence"),
+            scan_sequence=parse_sequence("scan_sequence"),
+        )
+
+    @staticmethod
+    def _read_metadata(metadata_path: Path) -> dict:
         return json.loads(metadata_path.read_text(encoding="utf-8"))
 
     def _summary_from_metadata(self, metadata: dict, metadata_path: Path) -> StoredSessionSummary:
@@ -290,11 +359,17 @@ class SessionRepository:
             f"ch{channel.get('index')}:{channel.get('display_name', channel.get('signal_type', 'sinal'))}"
             for channel in channels
         ]
+        stats = self._communication_from_metadata(metadata)
         return StoredSessionSummary(
             session_id=str(metadata.get("session_id", metadata_path.stem)),
             created_at=str(metadata.get("created_at", "")),
-            frames_received=int(metadata.get("frames_received", 0)),
-            sequence_gaps=int(metadata.get("sequence_gaps", 0)),
+            frames_received=stats.valid_frames,
+            gap_events=stats.gap_events,
+            missing_frames=stats.missing_frames,
+            duplicate_frames=stats.duplicate_frames,
+            out_of_order_frames=stats.out_of_order_frames,
+            invalid_frames=stats.invalid_frames,
+            timestamp_regressions=stats.timestamp_regressions,
             channel_count=len(channels),
             base_sample_rate_hz=int(session_metadata.get("base_sample_rate_hz", 0)),
             channel_labels=labels,
@@ -302,7 +377,8 @@ class SessionRepository:
             data_path=metadata_path.parent / data_filename,
         )
 
-    def _session_from_metadata(self, metadata: dict) -> SessionConfig:
+    @staticmethod
+    def _session_from_metadata(metadata: dict) -> SessionConfig:
         session_metadata = metadata["session"]
         channels = []
         for channel_metadata in session_metadata.get("channels", []):
@@ -324,6 +400,8 @@ class SessionRepository:
             baudrate=int(session_metadata.get("baudrate", 1)),
             base_sample_rate_hz=int(session_metadata["base_sample_rate_hz"]),
             window_size=int(session_metadata["window_size"]),
-            protocol_mode=ProtocolMode(str(session_metadata.get("protocol_mode", ProtocolMode.FRAME_CSV.value))),
+            protocol_mode=ProtocolMode(
+                str(session_metadata.get("protocol_mode", ProtocolMode.FRAME_CSV.value))
+            ),
             channels=channels,
         )

@@ -106,6 +106,7 @@ class MainController(QObject):
 
         self.serial_reader.frame_received.connect(self.on_frame_received)
         self.serial_reader.error_occurred.connect(self.on_error)
+        self.serial_reader.protocol_error.connect(self.on_protocol_error)
         self.serial_reader.connection_changed.connect(self.on_connection_changed)
 
     def log(self, level: str, message: str) -> None:
@@ -162,7 +163,7 @@ class MainController(QObject):
 
     @pyqtSlot()
     def go_live_from_config(self) -> None:
-        if self._session is None and not self.validate_session():
+        if self._session is None and not self._validate_session():
             return
         self._stored_raw_snapshot = None
         self.window.show_live()
@@ -263,6 +264,9 @@ class MainController(QObject):
 
     @pyqtSlot()
     def validate_session(self) -> None:
+        self._validate_session()
+
+    def _validate_session(self) -> bool:
         try:
             self._session = self.session_service.build_session(
                 port=self.window.selected_port,
@@ -281,13 +285,13 @@ class MainController(QObject):
             self._stored_raw_snapshot = None
             self.log("ERRO", str(exc))
             self.refresh_live_view(force=True)
-            return
+            return False
         except Exception as exc:
             self._session = None
             self._stored_raw_snapshot = None
             self.log("ERRO", f"Falha inesperada ao validar sessão: {exc}")
             self.refresh_live_view(force=True)
-            return
+            return False
 
         ordered_signals = ", ".join(
             f"{channel.index}:{channel.signal_type.value}" for channel in self._session.channels
@@ -301,10 +305,11 @@ class MainController(QObject):
             ),
         )
         self.refresh_live_view(force=True)
+        return True
 
     @pyqtSlot()
     def validate_sample_frame(self) -> None:
-        if self._session is None and not self.validate_session():
+        if self._session is None and not self._validate_session():
             return
         assert self._session is not None
 
@@ -321,12 +326,15 @@ class MainController(QObject):
             pairs.append(f"ch{channel.index}:{channel.signal_type.value}={value:g} {channel.unit}")
         self.log(
             "OK",
-            f"Frame aceito: seq={frame.sequence_id}, timestamp_ms={frame.timestamp_ms}, " + ", ".join(pairs),
+            (
+                f"Frame aceito: packet_seq={frame.packet_sequence}, scan_seq={frame.scan_sequence}, "
+                f"timestamp_us={frame.timestamp_us}, " + ", ".join(pairs)
+            ),
         )
 
     @pyqtSlot()
     def ingest_sample_frame(self) -> None:
-        if self._session is None and not self.validate_session():
+        if self._session is None and not self._validate_session():
             return
         assert self._session is not None
 
@@ -334,20 +342,29 @@ class MainController(QObject):
         line = self.window.sample_frame_text
         try:
             frame = self.parser.parse_line(line, self._session).frame
-            self.acquisition_service.ingest_frame(frame)
+            accepted = self.acquisition_service.ingest_frame(frame)
         except Exception as exc:
             self.log("ERRO", f"Não foi possível inserir frame no buffer: {exc}")
             return
 
         self.refresh_live_view(force=True)
-        self.log("BUFFER", f"Frame seq={frame.sequence_id} inserido nos buffers multicanais.")
+        if accepted:
+            self.log(
+                "BUFFER",
+                f"Frame packet_seq={frame.packet_sequence}, scan_seq={frame.scan_sequence} inserido nos buffers.",
+            )
+        else:
+            self.log(
+                "AVISO",
+                f"Frame packet_seq={frame.packet_sequence}, scan_seq={frame.scan_sequence} rejeitado pelo diagnóstico.",
+            )
 
     @pyqtSlot()
     def connect_serial(self) -> None:
         if self.serial_reader.isRunning():
             self.log("INFO", "A serial já está conectada ou tentando conectar.")
             return
-        if self._session is None and not self.validate_session():
+        if self._session is None and not self._validate_session():
             return
         assert self._session is not None
         self._stored_raw_snapshot = None
@@ -497,20 +514,40 @@ class MainController(QObject):
     def on_frame_received(self, frame: SampleFrame) -> None:
         self._stored_raw_snapshot = None
         try:
-            self.acquisition_service.ingest_frame(frame)
+            accepted = self.acquisition_service.ingest_frame(frame)
         except Exception as exc:
             self.log("ERRO", f"Frame recebido, mas não inserido nos buffers: {exc}")
             return
 
         snapshot = self.acquisition_service.snapshot()
+        if not accepted:
+            stats = snapshot.communication
+            self.log(
+                "AVISO",
+                (
+                    f"Frame rejeitado: packet_seq={frame.packet_sequence}, scan_seq={frame.scan_sequence}, "
+                    f"duplicados={stats.duplicate_frames}, fora_ordem={stats.out_of_order_frames}, "
+                    f"timestamp_regressivo={stats.timestamp_regressions}"
+                ),
+            )
+            return
+
         if snapshot.frames_received == 1 or snapshot.frames_received % 50 == 0:
+            stats = snapshot.communication
             self.log(
                 "FRAME",
                 (
-                    f"frames={snapshot.frames_received}, último_seq={snapshot.last_sequence_id}, "
-                    f"gaps={snapshot.sequence_gaps}"
+                    f"frames={snapshot.frames_received}, packet_seq={snapshot.last_packet_sequence}, "
+                    f"scan_seq={snapshot.last_scan_sequence}, gaps={stats.gap_events}, "
+                    f"ausentes={stats.missing_frames}"
                 ),
             )
+
+    @pyqtSlot(str)
+    def on_protocol_error(self, message: str) -> None:
+        self.acquisition_service.record_invalid_frame()
+        self.refresh_live_view(force=True)
+        self.log("PROTOCOLO", f"Frame serial inválido: {message}")
 
     @pyqtSlot(str)
     def on_error(self, message: str) -> None:
@@ -532,7 +569,12 @@ class MainController(QObject):
                 f"ID: {summary.session_id}",
                 f"Criada em: {summary.created_at}",
                 f"Frames: {summary.frames_received}",
-                f"Gaps de sequência: {summary.sequence_gaps}",
+                f"Eventos de gap: {summary.gap_events}",
+                f"Frames ausentes estimados: {summary.missing_frames}",
+                f"Frames duplicados: {summary.duplicate_frames}",
+                f"Frames fora de ordem: {summary.out_of_order_frames}",
+                f"Frames inválidos: {summary.invalid_frames}",
+                f"Timestamps não crescentes: {summary.timestamp_regressions}",
                 f"Canais: {summary.channel_count}",
                 f"Taxa base: {summary.base_sample_rate_hz} Hz",
                 "",

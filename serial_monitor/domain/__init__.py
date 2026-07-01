@@ -1,5 +1,11 @@
-from .enums import SignalType, ProtocolMode
-from .models import SignalChannelConfig, SessionConfig, SampleFrame
+from .enums import ProtocolMode, SignalType, WindowPageIndex
+from .models import (
+    CommunicationStats,
+    SampleFrame,
+    SequenceDiagnostics,
+    SessionConfig,
+    SignalChannelConfig,
+)
 
 __all__ = [
     "SignalType",
@@ -8,4 +14,6 @@ __all__ = [
     "SignalChannelConfig",
     "SessionConfig",
     "SampleFrame",
+    "SequenceDiagnostics",
+    "CommunicationStats",
 ]

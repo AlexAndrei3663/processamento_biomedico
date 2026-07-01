@@ -198,7 +198,7 @@ class SignalTab(QWidget):
             self.last_processed_value_label.setText(
                 f"Último processado: {snapshot.last_processed_value:g} {self.channel.unit}"
             )
-        self.last_time_label.setText(f"Último timestamp: {snapshot.last_timestamp_ms} ms")
+        self.last_time_label.setText(f"Último timestamp: {snapshot.last_timestamp_us} µs")
 
         active_filter_set = set(snapshot.active_filters)
         for filter_id, checkbox in self.filter_checkboxes.items():

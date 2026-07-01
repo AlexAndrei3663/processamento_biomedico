@@ -10,6 +10,7 @@ from .protocol import FrameCsvParser, FrameProtocolError
 class SerialReader(QThread):
     frame_received = pyqtSignal(object)
     error_occurred = pyqtSignal(str)
+    protocol_error = pyqtSignal(str)
     connection_changed = pyqtSignal(bool)
 
     def __init__(self, parser: FrameCsvParser | None = None):
@@ -44,7 +45,7 @@ class SerialReader(QThread):
                         parsed = self._parser.parse_line(decoded_line, self._session)
                         self.frame_received.emit(parsed.frame)
                     except FrameProtocolError as exc:
-                        self.error_occurred.emit(f"Erro de protocolo: {exc}")
+                        self.protocol_error.emit(str(exc))
                     except Exception as exc:
                         self.error_occurred.emit(f"Erro inesperado ao processar linha serial: {exc}")
         except serial.SerialException as exc:
