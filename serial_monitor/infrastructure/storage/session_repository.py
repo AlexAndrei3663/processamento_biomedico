@@ -27,7 +27,7 @@ class SessionRepository:
 
     METADATA_SUFFIX = ".json"
     DATA_SUFFIX = ".npz"
-    FORMAT_VERSION = 2
+    FORMAT_VERSION = 3
 
     def __init__(self, base_dir: str | Path = "data/sessions") -> None:
         self.base_dir = Path(base_dir)
@@ -62,20 +62,13 @@ class SessionRepository:
 
         arrays: Dict[str, np.ndarray] = {}
         for channel_index, channel_snapshot in snapshot.channels.items():
-            arrays[f"ch{channel_index}_values"] = np.asarray(
-                channel_snapshot.values,
-                dtype=float,
-            )
+            arrays[f"ch{channel_index}_values"] = np.asarray(channel_snapshot.values, dtype=float)
             arrays[f"ch{channel_index}_timestamps_us"] = np.asarray(
                 channel_snapshot.timestamps_us,
                 dtype=np.uint64,
             )
-            arrays[f"ch{channel_index}_packet_sequences"] = np.asarray(
-                channel_snapshot.packet_sequences,
-                dtype=np.uint32,
-            )
-            arrays[f"ch{channel_index}_scan_sequences"] = np.asarray(
-                channel_snapshot.scan_sequences,
+            arrays[f"ch{channel_index}_sequence_ids"] = np.asarray(
+                channel_snapshot.sequence_ids,
                 dtype=np.uint32,
             )
 
@@ -106,7 +99,7 @@ class SessionRepository:
         metadata = self._read_metadata(metadata_path)
         if int(metadata.get("version", 0)) != self.FORMAT_VERSION:
             raise ValueError(
-                "Versão de sessão incompatível com a atual. "
+                "Versão de sessão incompatível com a Etapa 12 revisada. "
                 f"Esperado {self.FORMAT_VERSION}, recebido {metadata.get('version')}."
             )
 
@@ -129,16 +122,12 @@ class SessionRepository:
                     data.get(f"{prefix}_timestamps_us", np.array([], dtype=np.uint64)),
                     dtype=np.uint64,
                 )
-                packet_sequences = np.asarray(
-                    data.get(f"{prefix}_packet_sequences", np.array([], dtype=np.uint32)),
-                    dtype=np.uint32,
-                )
-                scan_sequences = np.asarray(
-                    data.get(f"{prefix}_scan_sequences", np.array([], dtype=np.uint32)),
+                sequence_ids = np.asarray(
+                    data.get(f"{prefix}_sequence_ids", np.array([], dtype=np.uint32)),
                     dtype=np.uint32,
                 )
 
-                lengths = {len(values), len(timestamps_us), len(packet_sequences), len(scan_sequences)}
+                lengths = {len(values), len(timestamps_us), len(sequence_ids)}
                 if len(lengths) != 1:
                     raise ValueError(f"Arrays inconsistentes no canal {channel.index}.")
 
@@ -159,8 +148,7 @@ class SessionRepository:
                     x_seconds=x_seconds,
                     values=values,
                     timestamps_us=timestamps_us,
-                    packet_sequences=packet_sequences,
-                    scan_sequences=scan_sequences,
+                    sequence_ids=sequence_ids,
                     last_value=last_value,
                     last_timestamp_us=last_timestamp_us,
                 )
@@ -169,8 +157,7 @@ class SessionRepository:
             configured=True,
             running=False,
             communication=self._communication_from_metadata(metadata),
-            last_packet_sequence=metadata.get("last_packet_sequence"),
-            last_scan_sequence=metadata.get("last_scan_sequence"),
+            last_sequence_id=metadata.get("last_sequence_id"),
             last_timestamp_us=metadata.get("last_timestamp_us"),
             channels=channel_snapshots,
         )
@@ -204,8 +191,7 @@ class SessionRepository:
             header.extend(
                 [
                     f"{prefix}_timestamp_us",
-                    f"{prefix}_packet_sequence",
-                    f"{prefix}_scan_sequence",
+                    f"{prefix}_sequence_id",
                     f"{prefix}_{unit}",
                 ]
             )
@@ -220,13 +206,12 @@ class SessionRepository:
                         row.extend(
                             [
                                 int(channel_snapshot.timestamps_us[row_index]),
-                                int(channel_snapshot.packet_sequences[row_index]),
-                                int(channel_snapshot.scan_sequences[row_index]),
+                                int(channel_snapshot.sequence_ids[row_index]),
                                 float(channel_snapshot.values[row_index]),
                             ]
                         )
                     else:
-                        row.extend(["", "", "", ""])
+                        row.extend(["", "", ""])
                 writer.writerow(row)
         return output_path
 
@@ -272,13 +257,11 @@ class SessionRepository:
             "created_at": created_at,
             "data_filename": data_filename,
             "protocol_contract": {
-                "packet_sequence": "uint32; incremento por pacote; wrap em 2^32; reinício no boot",
-                "scan_sequence": "uint32; incremento por ciclo multicanal; wrap em 2^32; reinício no boot",
+                "sequence_id": "uint32; incremento por ciclo multicanal; wrap em 2^32; reinício no boot",
                 "timestamp_us": "uint64; microssegundos desde o boot; primeira conversão do ciclo",
             },
             "communication": self._communication_to_dict(communication),
-            "last_packet_sequence": snapshot.last_packet_sequence,
-            "last_scan_sequence": snapshot.last_scan_sequence,
+            "last_sequence_id": snapshot.last_sequence_id,
             "last_timestamp_us": snapshot.last_timestamp_us,
             "active_filters": {str(index): list(filters) for index, filters in active_filters.items()},
             "session": {
@@ -321,8 +304,7 @@ class SessionRepository:
             "invalid_frames": stats.invalid_frames,
             "checksum_errors": stats.checksum_errors,
             "timestamp_regressions": stats.timestamp_regressions,
-            "packet_sequence": sequence_dict(stats.packet_sequence),
-            "scan_sequence": sequence_dict(stats.scan_sequence),
+            "sequence": sequence_dict(stats.sequence),
         }
 
     @staticmethod
@@ -343,8 +325,7 @@ class SessionRepository:
             invalid_frames=int(communication.get("invalid_frames", 0)),
             checksum_errors=int(communication.get("checksum_errors", 0)),
             timestamp_regressions=int(communication.get("timestamp_regressions", 0)),
-            packet_sequence=parse_sequence("packet_sequence"),
-            scan_sequence=parse_sequence("scan_sequence"),
+            sequence=parse_sequence("sequence"),
         )
 
     @staticmethod

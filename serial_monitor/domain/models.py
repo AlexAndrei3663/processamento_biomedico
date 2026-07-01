@@ -92,39 +92,36 @@ class CommunicationStats:
     invalid_frames: int = 0
     checksum_errors: int = 0
     timestamp_regressions: int = 0
-    packet_sequence: SequenceDiagnostics = field(default_factory=SequenceDiagnostics)
-    scan_sequence: SequenceDiagnostics = field(default_factory=SequenceDiagnostics)
+    sequence: SequenceDiagnostics = field(default_factory=SequenceDiagnostics)
 
     @property
     def gap_events(self) -> int:
-        return self.packet_sequence.gap_events
+        return self.sequence.gap_events
 
     @property
     def missing_frames(self) -> int:
-        return self.packet_sequence.missing_items
+        return self.sequence.missing_items
 
     @property
     def duplicate_frames(self) -> int:
-        return self.packet_sequence.duplicate_items
+        return self.sequence.duplicate_items
 
     @property
     def out_of_order_frames(self) -> int:
-        return self.packet_sequence.out_of_order_items
+        return self.sequence.out_of_order_items
 
 
 @dataclass(slots=True)
 class SampleFrame:
     """Um quadro multicanal correspondente a um ciclo de varredura.
 
-    ``packet_sequence`` identifica o pacote transmitido. ``scan_sequence`` identifica
-    o ciclo de aquisição multicanal. Nesta versão textual há um ciclo por pacote, mas os
-    contadores permanecem separados para permitir lotes e mensagens assíncronas depois.
+    ``sequence_id`` identifica o ciclo de aquisição multicanal e também o quadro
+    transmitido, pois nesta versão existe exatamente um ciclo por quadro.
     ``timestamp_us`` é gerado pelo STM32 e representa o instante da primeira conversão
     do ciclo, em microssegundos desde o boot do firmware.
     """
 
-    packet_sequence: int
-    scan_sequence: int
+    sequence_id: int
     timestamp_us: int
     values_by_channel_index: Dict[int, float]
     values_in_order: List[float]
@@ -140,8 +137,7 @@ class ChannelBufferSnapshot:
     x_seconds: np.ndarray
     values: np.ndarray
     timestamps_us: np.ndarray
-    packet_sequences: np.ndarray
-    scan_sequences: np.ndarray
+    sequence_ids: np.ndarray
     last_value: float | None
     last_timestamp_us: int | None
 
@@ -151,8 +147,7 @@ class AcquisitionSnapshot:
     configured: bool
     running: bool
     communication: CommunicationStats
-    last_packet_sequence: int | None
-    last_scan_sequence: int | None
+    last_sequence_id: int | None
     last_timestamp_us: int | None
     channels: Dict[int, ChannelBufferSnapshot]
 
@@ -186,8 +181,7 @@ class ProcessedChannelSnapshot:
     raw_values: np.ndarray
     processed_values: np.ndarray
     timestamps_us: np.ndarray
-    packet_sequences: np.ndarray
-    scan_sequences: np.ndarray
+    sequence_ids: np.ndarray
     last_raw_value: float | None
     last_processed_value: float | None
     last_timestamp_us: int | None
@@ -203,8 +197,7 @@ class ProcessedAcquisitionSnapshot:
     configured: bool
     running: bool
     communication: CommunicationStats
-    last_packet_sequence: int | None
-    last_scan_sequence: int | None
+    last_sequence_id: int | None
     last_timestamp_us: int | None
     channels: Dict[int, ProcessedChannelSnapshot]
 

@@ -48,7 +48,7 @@ def test_processing_service_keeps_raw_values_when_no_filter_is_active() -> None:
     )
     acquisition = LiveAcquisitionService()
     acquisition.configure(session)
-    frame = FrameCsvParser().parse_line("FRAME,1,1,1000000,1.0,2.0", session).frame
+    frame = FrameCsvParser().parse_line("FRAME,1,1000000,1.0,2.0", session).frame
     acquisition.ingest_frame(frame)
 
     processor = ProcessingService()
@@ -71,7 +71,7 @@ def test_processing_service_applies_enabled_filter() -> None:
     acquisition.configure(session)
     parser = FrameCsvParser()
     for index, value in enumerate([1.0, 2.0, 3.0], start=1):
-        acquisition.ingest_frame(parser.parse_line(f"FRAME,{index},{index},{index * 10_000},{value}", session).frame)
+        acquisition.ingest_frame(parser.parse_line(f"FRAME,{index},{index * 10_000},{value}", session).frame)
 
     processor = ProcessingService()
     processor.configure(session)

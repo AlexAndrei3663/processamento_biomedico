@@ -163,7 +163,7 @@ class MainController(QObject):
 
     @pyqtSlot()
     def go_live_from_config(self) -> None:
-        if self._session is None and not self._validate_session():
+        if self._session is None and not self.validate_session():
             return
         self._stored_raw_snapshot = None
         self.window.show_live()
@@ -309,7 +309,7 @@ class MainController(QObject):
 
     @pyqtSlot()
     def validate_sample_frame(self) -> None:
-        if self._session is None and not self._validate_session():
+        if self._session is None and not self.validate_session():
             return
         assert self._session is not None
 
@@ -327,14 +327,14 @@ class MainController(QObject):
         self.log(
             "OK",
             (
-                f"Frame aceito: packet_seq={frame.packet_sequence}, scan_seq={frame.scan_sequence}, "
-                f"timestamp_us={frame.timestamp_us}, " + ", ".join(pairs)
+                f"Frame aceito: seq={frame.sequence_id}, timestamp_us={frame.timestamp_us}, "
+                + ", ".join(pairs)
             ),
         )
 
     @pyqtSlot()
     def ingest_sample_frame(self) -> None:
-        if self._session is None and not self._validate_session():
+        if self._session is None and not self.validate_session():
             return
         assert self._session is not None
 
@@ -351,12 +351,12 @@ class MainController(QObject):
         if accepted:
             self.log(
                 "BUFFER",
-                f"Frame packet_seq={frame.packet_sequence}, scan_seq={frame.scan_sequence} inserido nos buffers.",
+                f"Frame seq={frame.sequence_id} inserido nos buffers.",
             )
         else:
             self.log(
                 "AVISO",
-                f"Frame packet_seq={frame.packet_sequence}, scan_seq={frame.scan_sequence} rejeitado pelo diagnóstico.",
+                f"Frame seq={frame.sequence_id} rejeitado pelo diagnóstico.",
             )
 
     @pyqtSlot()
@@ -364,7 +364,7 @@ class MainController(QObject):
         if self.serial_reader.isRunning():
             self.log("INFO", "A serial já está conectada ou tentando conectar.")
             return
-        if self._session is None and not self._validate_session():
+        if self._session is None and not self.validate_session():
             return
         assert self._session is not None
         self._stored_raw_snapshot = None
@@ -525,7 +525,7 @@ class MainController(QObject):
             self.log(
                 "AVISO",
                 (
-                    f"Frame rejeitado: packet_seq={frame.packet_sequence}, scan_seq={frame.scan_sequence}, "
+                    f"Frame rejeitado: seq={frame.sequence_id}, "
                     f"duplicados={stats.duplicate_frames}, fora_ordem={stats.out_of_order_frames}, "
                     f"timestamp_regressivo={stats.timestamp_regressions}"
                 ),
@@ -537,8 +537,8 @@ class MainController(QObject):
             self.log(
                 "FRAME",
                 (
-                    f"frames={snapshot.frames_received}, packet_seq={snapshot.last_packet_sequence}, "
-                    f"scan_seq={snapshot.last_scan_sequence}, gaps={stats.gap_events}, "
+                    f"frames={snapshot.frames_received}, seq={snapshot.last_sequence_id}, "
+                    f"gaps={stats.gap_events}, "
                     f"ausentes={stats.missing_frames}"
                 ),
             )

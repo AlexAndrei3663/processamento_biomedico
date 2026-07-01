@@ -92,7 +92,7 @@ class ConfigPage(QWidget):
         protocol_group = QGroupBox("Validação manual do protocolo")
         protocol_layout = QVBoxLayout(protocol_group)
         protocol_form = QFormLayout()
-        self.sample_frame_input = QLineEdit("FRAME,1,1,1000000,0.52,0.81,97")
+        self.sample_frame_input = QLineEdit("FRAME,1,1000000,0.52,0.81,97")
         protocol_form.addRow("Frame de teste", self.sample_frame_input)
         protocol_layout.addLayout(protocol_form)
 
@@ -166,8 +166,6 @@ class ConfigPage(QWidget):
             index = self.port_selector.findData(current)
             if index >= 0:
                 self.port_selector.setCurrentIndex(index)
-        else:
-            self.port_selector.setCurrentIndex(-1)
 
 
     def append_log(self, level: str, message: str) -> None:

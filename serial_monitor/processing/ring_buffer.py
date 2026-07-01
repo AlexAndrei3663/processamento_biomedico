@@ -8,8 +8,8 @@ from serial_monitor.domain.models import ChannelBufferSnapshot, SignalChannelCon
 class RingBuffer:
     """Buffer circular de visualização para um canal.
 
-    O buffer mantém valor, timestamp em microssegundos e os contadores de pacote e
-    varredura. O snapshot sempre devolve os dados em ordem cronológica.
+    O buffer mantém valor, timestamp em microssegundos e o identificador sequencial do
+    ciclo de aquisição. O snapshot sempre devolve os dados em ordem cronológica.
     """
 
     def __init__(self, channel: SignalChannelConfig, capacity: int) -> None:
@@ -19,8 +19,7 @@ class RingBuffer:
         self.capacity = capacity
         self._values = np.zeros(capacity, dtype=float)
         self._timestamps_us = np.zeros(capacity, dtype=np.uint64)
-        self._packet_sequences = np.zeros(capacity, dtype=np.uint32)
-        self._scan_sequences = np.zeros(capacity, dtype=np.uint32)
+        self._sequence_ids = np.zeros(capacity, dtype=np.uint32)
         self._write_index = 0
         self._count = 0
 
@@ -35,8 +34,7 @@ class RingBuffer:
     def clear(self) -> None:
         self._values.fill(0.0)
         self._timestamps_us.fill(0)
-        self._packet_sequences.fill(0)
-        self._scan_sequences.fill(0)
+        self._sequence_ids.fill(0)
         self._write_index = 0
         self._count = 0
 
@@ -44,13 +42,11 @@ class RingBuffer:
         self,
         value: float,
         timestamp_us: int,
-        packet_sequence: int,
-        scan_sequence: int,
+        sequence_id: int,
     ) -> None:
         self._values[self._write_index] = value
         self._timestamps_us[self._write_index] = timestamp_us
-        self._packet_sequences[self._write_index] = packet_sequence
-        self._scan_sequences[self._write_index] = scan_sequence
+        self._sequence_ids[self._write_index] = sequence_id
 
         self._write_index = (self._write_index + 1) % self.capacity
         self._count = min(self._count + 1, self.capacity)
@@ -71,8 +67,7 @@ class RingBuffer:
         indices = self._ordered_indices()
         values = self._values[indices].copy()
         timestamps_us = self._timestamps_us[indices].copy()
-        packet_sequences = self._packet_sequences[indices].copy()
-        scan_sequences = self._scan_sequences[indices].copy()
+        sequence_ids = self._sequence_ids[indices].copy()
 
         if len(timestamps_us) > 0:
             x_seconds = (timestamps_us.astype(np.float64) - float(timestamps_us[0])) / 1_000_000.0
@@ -89,8 +84,7 @@ class RingBuffer:
             x_seconds=x_seconds,
             values=values,
             timestamps_us=timestamps_us,
-            packet_sequences=packet_sequences,
-            scan_sequences=scan_sequences,
+            sequence_ids=sequence_ids,
             last_value=last_value,
             last_timestamp_us=last_timestamp_us,
         )

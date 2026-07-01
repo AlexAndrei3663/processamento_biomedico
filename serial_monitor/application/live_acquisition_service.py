@@ -83,8 +83,7 @@ class LiveAcquisitionService:
             self._buffers[channel_index].append(
                 value=value,
                 timestamp_us=frame.timestamp_us,
-                packet_sequence=frame.packet_sequence,
-                scan_sequence=frame.scan_sequence,
+                sequence_id=frame.sequence_id,
             )
         return True
 
@@ -93,8 +92,7 @@ class LiveAcquisitionService:
             configured=self._session is not None,
             running=self._running,
             communication=self._communication.snapshot(),
-            last_packet_sequence=self._communication.last_packet_sequence,
-            last_scan_sequence=self._communication.last_scan_sequence,
+            last_sequence_id=self._communication.last_sequence_id,
             last_timestamp_us=self._communication.last_timestamp_us,
             channels={index: buffer.snapshot() for index, buffer in self._buffers.items()},
         )

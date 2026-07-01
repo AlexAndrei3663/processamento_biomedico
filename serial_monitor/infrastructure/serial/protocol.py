@@ -12,22 +12,23 @@ class FrameProtocolError(ValueError):
 
 
 class FrameCsvParser:
-    """Parser do protocolo textual multicanal da Etapa 12.
+    """Parser do protocolo textual multicanal revisado da Etapa 12.
 
     Formato oficial::
 
-        FRAME,<packet_sequence>,<scan_sequence>,<timestamp_us>,<v0>,...,<vN>
+        FRAME,<sequence_id>,<timestamp_us>,<v0>,...,<vN>
 
     Contrato temporal:
-    - ``packet_sequence`` é uint32 e identifica o pacote transmitido;
-    - ``scan_sequence`` é uint32 e identifica o ciclo de varredura multicanal;
-    - ambos reiniciam no boot do firmware e avançam com wrap em ``2**32``;
+    - ``sequence_id`` é uint32 e identifica simultaneamente o quadro transmitido e o
+      ciclo de varredura multicanal;
+    - o contador reinicia no boot do firmware e avança com wrap em ``2**32``;
     - ``timestamp_us`` é uint64, monotônico, em microssegundos desde o boot;
     - o timestamp corresponde à primeira conversão do ciclo;
     - os valores seguem a ordem dos canais configurada na sessão.
 
-    Nesta versão textual há um ciclo por pacote. Os dois contadores permanecem separados
-    para permitir que o protocolo evolua para lotes e canais assíncronos.
+    Como existe exatamente um ciclo por quadro, manter dois contadores teria informação
+    redundante. Caso o protocolo evolua para pacotes em lote, o contrato deverá ser
+    versionado e revisto explicitamente.
     """
 
     header = "FRAME"
@@ -48,7 +49,7 @@ class FrameCsvParser:
             raise FrameProtocolError("Linha vazia recebida.")
 
         tokens = [token.strip() for token in clean_line.split(",")]
-        expected_tokens = 4 + session.channel_count
+        expected_tokens = 3 + session.channel_count
         if len(tokens) != expected_tokens:
             raise FrameProtocolError(
                 f"Quantidade de campos inválida. Esperado {expected_tokens}, recebido {len(tokens)}."
@@ -56,24 +57,19 @@ class FrameCsvParser:
         if tokens[0].upper() != self.header:
             raise FrameProtocolError("Cabeçalho FRAME ausente.")
 
-        packet_sequence = self._parse_unsigned(
+        sequence_id = self._parse_unsigned(
             tokens[1],
-            name="packet_sequence",
-            maximum=UINT32_MAX,
-        )
-        scan_sequence = self._parse_unsigned(
-            tokens[2],
-            name="scan_sequence",
+            name="sequence_id",
             maximum=UINT32_MAX,
         )
         timestamp_us = self._parse_unsigned(
-            tokens[3],
+            tokens[2],
             name="timestamp_us",
             maximum=UINT64_MAX,
         )
 
         try:
-            values_in_order = [float(token) for token in tokens[4:]]
+            values_in_order = [float(token) for token in tokens[3:]]
         except ValueError as exc:
             raise FrameProtocolError("Valores de canal inválidos no frame.") from exc
         if any(not math.isfinite(value) for value in values_in_order):
@@ -85,8 +81,7 @@ class FrameCsvParser:
         }
         return ParsedFrame(
             frame=SampleFrame(
-                packet_sequence=packet_sequence,
-                scan_sequence=scan_sequence,
+                sequence_id=sequence_id,
                 timestamp_us=timestamp_us,
                 values_by_channel_index=values_by_channel_index,
                 values_in_order=values_in_order,
@@ -95,19 +90,16 @@ class FrameCsvParser:
 
 
 def format_frame_csv(
-    packet_sequence: int,
-    scan_sequence: int,
+    sequence_id: int,
     timestamp_us: int,
     values: List[float],
 ) -> str:
-    if not 0 <= packet_sequence <= UINT32_MAX:
-        raise ValueError("packet_sequence fora da faixa uint32.")
-    if not 0 <= scan_sequence <= UINT32_MAX:
-        raise ValueError("scan_sequence fora da faixa uint32.")
+    if not 0 <= sequence_id <= UINT32_MAX:
+        raise ValueError("sequence_id fora da faixa uint32.")
     if not 0 <= timestamp_us <= UINT64_MAX:
         raise ValueError("timestamp_us fora da faixa uint64.")
-    if any(not math.isfinite(float(value)) for value in values):
-        raise ValueError("Os valores do payload devem ser finitos.")
+    if any(not math.isfinite(value) for value in values):
+        raise ValueError("Valores NaN ou infinitos não são aceitos.")
 
     payload = ",".join(str(value) for value in values)
-    return f"FRAME,{packet_sequence},{scan_sequence},{timestamp_us},{payload}"
+    return f"FRAME,{sequence_id},{timestamp_us},{payload}"

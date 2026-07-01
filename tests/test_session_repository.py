@@ -21,9 +21,9 @@ def test_session_repository_saves_lists_and_loads_stage12_contract(tmp_path):
     acquisition.configure(session)
 
     for line in (
-        "FRAME,1,1,1000000,0.52,0.81,97",
-        "FRAME,2,2,1001000,0.55,0.83,98",
-        "FRAME,4,4,1003000,0.58,0.84,98",
+        "FRAME,1,1000000,0.52,0.81,97",
+        "FRAME,2,1001000,0.55,0.83,98",
+        "FRAME,4,1003000,0.58,0.84,98",
     ):
         assert acquisition.ingest_frame(parser.parse_line(line, session).frame)
     acquisition.record_invalid_frame()
@@ -54,7 +54,6 @@ def test_session_repository_saves_lists_and_loads_stage12_contract(tmp_path):
     assert loaded.snapshot.communication.invalid_frames == 1
     assert loaded.snapshot.channels[0].values[-1] == pytest.approx(0.58)
     assert loaded.snapshot.channels[0].timestamps_us[-1] == 1_003_000
-    assert loaded.snapshot.channels[0].packet_sequences[-1] == 4
     assert loaded.snapshot.channels[2].values[-1] == 98
     assert loaded.active_filters[0] == ["baseline"]
     assert loaded.active_filters[1] == ["lowpass"]
@@ -64,8 +63,7 @@ def test_session_repository_saves_lists_and_loads_stage12_contract(tmp_path):
     csv_text = csv_path.read_text(encoding="utf-8")
     assert "sample_index" in csv_text
     assert "ch0_ecg_timestamp_us" in csv_text
-    assert "ch0_ecg_packet_sequence" in csv_text
-    assert "ch0_ecg_scan_sequence" in csv_text
+    assert "ch0_ecg_sequence_id" in csv_text
     assert "ch2_oximetria_%" in csv_text
 
     repository.delete(saved.session_id)

@@ -96,12 +96,46 @@ class _SequenceTracker:
             self.diagnostics.out_of_order_items += 1
 
 
+def sequence_forward_distance(origin: int, current: int) -> int:
+    """Retorna a distância modular uint32 entre duas sequências."""
+
+    if not 0 <= origin <= UINT32_MAX or not 0 <= current <= UINT32_MAX:
+        raise ValueError("Sequências devem estar na faixa uint32.")
+    return (current - origin) % UINT32_MODULUS
+
+
+def estimate_timestamp_us(
+    *,
+    sequence_id: int,
+    origin_sequence_id: int,
+    origin_timestamp_us: int,
+    sample_rate_hz: float,
+) -> int:
+    """Estima o tempo ideal de um ciclo a partir da sequência e da taxa nominal.
+
+    A estimativa representa a grade temporal ideal. Ela não mede jitter, pausas,
+    deriva do clock ou atrasos reais do firmware e, portanto, não substitui o timestamp
+    gerado no STM32 quando essas grandezas precisam ser validadas.
+    """
+
+    if sample_rate_hz <= 0:
+        raise ValueError("A taxa de amostragem deve ser maior que zero.")
+    if not 0 <= origin_timestamp_us <= UINT64_MAX:
+        raise ValueError("origin_timestamp_us fora da faixa uint64.")
+
+    elapsed_cycles = sequence_forward_distance(origin_sequence_id, sequence_id)
+    elapsed_us = round(elapsed_cycles * 1_000_000.0 / sample_rate_hz)
+    estimated = origin_timestamp_us + elapsed_us
+    if estimated > UINT64_MAX:
+        raise OverflowError("Timestamp estimado excede a faixa uint64.")
+    return estimated
+
+
 class CommunicationMonitor:
     """Valida a continuidade temporal e sequencial dos quadros aceitos."""
 
     def __init__(self) -> None:
-        self._packet_tracker = _SequenceTracker()
-        self._scan_tracker = _SequenceTracker()
+        self._sequence_tracker = _SequenceTracker()
         self._valid_frames = 0
         self._invalid_frames = 0
         self._checksum_errors = 0
@@ -109,20 +143,15 @@ class CommunicationMonitor:
         self._last_timestamp_us: int | None = None
 
     @property
-    def last_packet_sequence(self) -> int | None:
-        return self._packet_tracker.last_value
-
-    @property
-    def last_scan_sequence(self) -> int | None:
-        return self._scan_tracker.last_value
+    def last_sequence_id(self) -> int | None:
+        return self._sequence_tracker.last_value
 
     @property
     def last_timestamp_us(self) -> int | None:
         return self._last_timestamp_us
 
     def reset(self) -> None:
-        self._packet_tracker.reset()
-        self._scan_tracker.reset()
+        self._sequence_tracker.reset()
         self._valid_frames = 0
         self._invalid_frames = 0
         self._checksum_errors = 0
@@ -143,25 +172,16 @@ class CommunicationMonitor:
         contabilizados e rejeitados. Gaps são aceitos e a quantidade ausente é estimada.
         """
 
-        packet_observation = self._packet_tracker.classify(frame.packet_sequence)
-        scan_observation = self._scan_tracker.classify(frame.scan_sequence)
-
-        rejected = False
-        if not packet_observation.is_acceptable:
-            self._packet_tracker.record_rejected(packet_observation)
-            rejected = True
-        if not scan_observation.is_acceptable:
-            self._scan_tracker.record_rejected(scan_observation)
-            rejected = True
-        if rejected:
+        observation = self._sequence_tracker.classify(frame.sequence_id)
+        if not observation.is_acceptable:
+            self._sequence_tracker.record_rejected(observation)
             return False
 
         if self._last_timestamp_us is not None and frame.timestamp_us <= self._last_timestamp_us:
             self._timestamp_regressions += 1
             return False
 
-        self._packet_tracker.commit_accepted(frame.packet_sequence, packet_observation)
-        self._scan_tracker.commit_accepted(frame.scan_sequence, scan_observation)
+        self._sequence_tracker.commit_accepted(frame.sequence_id, observation)
         self._last_timestamp_us = frame.timestamp_us
         self._valid_frames += 1
         return True
@@ -172,6 +192,5 @@ class CommunicationMonitor:
             invalid_frames=self._invalid_frames,
             checksum_errors=self._checksum_errors,
             timestamp_regressions=self._timestamp_regressions,
-            packet_sequence=self._packet_tracker.diagnostics.snapshot(),
-            scan_sequence=self._scan_tracker.diagnostics.snapshot(),
+            sequence=self._sequence_tracker.diagnostics.snapshot(),
         )
