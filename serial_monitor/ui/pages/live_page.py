@@ -32,6 +32,7 @@ class LivePage(QWidget):
     def __init__(self, update_interval_ms: int = 100, max_plot_points: int = 5000) -> None:
         super().__init__()
         self.signal_tabs: Dict[int, SignalTab] = {}
+        self._latest_snapshot: ProcessedAcquisitionSnapshot | None = None
         self.max_plot_points = max_plot_points
 
         outer_layout = QVBoxLayout(self)
@@ -101,6 +102,7 @@ class LivePage(QWidget):
         live_layout = QVBoxLayout(live_group)
         self.live_tabs = QTabWidget()
         self.live_tabs.setDocumentMode(True)
+        self.live_tabs.currentChanged.connect(self._refresh_current_tab)
         self.live_tabs.addTab(QLabel("Configure e valide a sessão para criar as abas dos sinais."), "Sem sessão")
         live_layout.addWidget(self.live_tabs)
         splitter.addWidget(live_group)
@@ -133,31 +135,69 @@ class LivePage(QWidget):
         )
         self.fullscreen_button.clicked.connect(self.fullscreen_requested.emit)
 
-    def build_signal_tabs(self, session: SessionConfig, max_plot_points: int | None = None) -> None:
+    def build_signal_tabs(
+        self,
+        session: SessionConfig,
+        max_plot_points: int | None = None,
+    ) -> None:
         if max_plot_points is not None:
             self.max_plot_points = max_plot_points
+
+        self._latest_snapshot = None
         self.live_tabs.clear()
         self.signal_tabs.clear()
 
         for channel in session.channels:
-            tab = SignalTab(channel, max_plot_points=self.max_plot_points)
+            tab = SignalTab(
+                channel,
+                max_plot_points=self.max_plot_points,
+            )
             tab.filter_toggled.connect(self.filter_toggled.emit)
-            tab.display_mode_changed.connect(self.display_mode_changed.emit)
+            tab.display_mode_changed.connect(
+                self.display_mode_changed.emit
+            )
+
             self.signal_tabs[channel.index] = tab
-            self.live_tabs.addTab(tab, f"ch{channel.index} - {channel.display_name}")
+            self.live_tabs.addTab(
+                tab,
+                f"ch{channel.index} - {channel.display_name}",
+            )
 
     def clear_signal_tabs(self) -> None:
         for tab in self.signal_tabs.values():
             tab.clear()
 
-    def update_live_view(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
+    def update_live_view(
+        self,
+        snapshot: ProcessedAcquisitionSnapshot,
+    ) -> None:
         if not snapshot.configured:
             return
 
-        for index, channel_snapshot in snapshot.channels.items():
-            tab = self.signal_tabs.get(index)
-            if tab is not None:
-                tab.update_from_snapshot(channel_snapshot)
+        self._latest_snapshot = snapshot
+        self._refresh_current_tab()
+
+
+    def _refresh_current_tab(
+        self,
+        _tab_index: int | None = None,
+    ) -> None:
+        """Atualiza somente a aba atualmente visível."""
+
+        if self._latest_snapshot is None:
+            return
+
+        current_tab = self.live_tabs.currentWidget()
+
+        if not isinstance(current_tab, SignalTab):
+            return
+
+        channel_snapshot = self._latest_snapshot.channels.get(
+            current_tab.channel.index
+        )
+
+        if channel_snapshot is not None:
+            current_tab.update_from_snapshot(channel_snapshot)
 
     def update_buffer_summary(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
         if not snapshot.configured:

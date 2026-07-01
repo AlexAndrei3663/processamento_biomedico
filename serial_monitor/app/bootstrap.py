@@ -47,6 +47,7 @@ class MainController(QObject):
         self._session = None
         self._stored_raw_snapshot: AcquisitionSnapshot | None = None
         self._last_summary_frame_count = -1
+        self._last_rendered_sequence_id: int | None = None
 
         self.view_timer = QTimer(self)
         self.view_timer.setInterval(self.settings.update_interval_ms)
@@ -280,6 +281,7 @@ class MainController(QObject):
             self.processing_service.configure(self._session)
             self.window.build_signal_tabs(self._session)
             self._last_summary_frame_count = -1
+            self._last_rendered_sequence_id = None
         except ValueError as exc:
             self._session = None
             self._stored_raw_snapshot = None
@@ -387,8 +389,11 @@ class MainController(QObject):
     @pyqtSlot()
     def clear_buffers(self) -> None:
         self._stored_raw_snapshot = None
+        self._last_rendered_sequence_id = None
+
         self.acquisition_service.reset()
         self.window.clear_signal_tabs()
+
         self.refresh_live_view(force=True)
         self.log("BUFFER", "Buffers multicanais limpos.")
 
@@ -502,13 +507,42 @@ class MainController(QObject):
 
     @pyqtSlot()
     def refresh_live_view(self, force: bool = False) -> None:
-        raw_snapshot = self._stored_raw_snapshot or self.acquisition_service.snapshot()
+        # Não processa nem redesenha gráficos quando outra página está aberta.
+        if (
+            not force
+            and self.window.stack.currentWidget() is not self.window.live_page
+        ):
+            return
+
+        raw_snapshot = (
+            self._stored_raw_snapshot
+            or self.acquisition_service.snapshot()
+        )
+
+        # Não recalcula filtros, métricas, FFT e gráficos quando não entrou
+        # nenhuma amostra nova desde a última atualização.
+        if (
+            not force
+            and raw_snapshot.last_sequence_id
+            == self._last_rendered_sequence_id
+        ):
+            return
+
         processed_snapshot = self.processing_service.process(raw_snapshot)
+
         self.window.update_live_view(processed_snapshot)
 
-        if force or processed_snapshot.frames_received != self._last_summary_frame_count:
+        if (
+            force
+            or processed_snapshot.frames_received
+            != self._last_summary_frame_count
+        ):
             self.window.update_buffer_summary(processed_snapshot)
-            self._last_summary_frame_count = processed_snapshot.frames_received
+            self._last_summary_frame_count = (
+                processed_snapshot.frames_received
+            )
+
+        self._last_rendered_sequence_id = raw_snapshot.last_sequence_id
 
     @pyqtSlot(object)
     def on_frame_received(self, frame: SampleFrame) -> None:
