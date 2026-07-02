@@ -166,6 +166,8 @@ class ConfigPage(QWidget):
             index = self.port_selector.findData(current)
             if index >= 0:
                 self.port_selector.setCurrentIndex(index)
+        else:
+            self.port_selector.setCurrentIndex(0 if ports else -1)
 
 
     def append_log(self, level: str, message: str) -> None:

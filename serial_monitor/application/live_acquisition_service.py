@@ -45,9 +45,16 @@ class LiveAcquisitionService:
     def stop(self) -> None:
         self._running = False
 
-    def reset(self) -> None:
+    def clear_buffers(self) -> None:
+        """Limpa somente a janela móvel de visualização."""
+
         for buffer in self._buffers.values():
             buffer.clear()
+
+    def reset(self) -> None:
+        """Reinicia buffers e diagnóstico para uma nova aquisição lógica."""
+
+        self.clear_buffers()
         self._communication.reset()
 
     def record_invalid_frame(self) -> None:

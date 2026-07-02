@@ -31,6 +31,16 @@ class SignalType(str, Enum):
 class ProtocolMode(str, Enum):
     FRAME_CSV = "frame_csv"
 
+
+class RecordingState(str, Enum):
+    IDLE = "idle"
+    RECORDING = "recording"
+    FINALIZING = "finalizing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class WindowPageIndex(int, Enum):
     MENU_PAGE = 0
     CONFIG_PAGE = 1

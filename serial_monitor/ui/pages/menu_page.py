@@ -14,7 +14,7 @@ class MenuPage(QWidget):
         root.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.setSpacing(16)
 
-        title = QLabel("Monitor de Sinais Biomédicos V1.0")
+        title = QLabel("Monitor de Sinais Biomédicos")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
 

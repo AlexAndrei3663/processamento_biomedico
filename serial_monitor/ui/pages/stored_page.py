@@ -89,13 +89,13 @@ class StoredPage(QWidget):
             self.details.setPlainText(
                 "Ainda não há sessões salvas em data/sessions.\n\n"
                 "Para criar uma sessão armazenada, faça uma aquisição ou insira frames de teste "
-                "e clique em 'Salvar sessão' na tela de visualização ao vivo."
+                "e use 'Iniciar gravação' e 'Finalizar gravação' na tela ao vivo."
             )
             return
 
         for summary in summaries:
             label = (
-                f"{summary.created_at} | {summary.frames_received} frames | "
+                f"{summary.created_at} | {summary.frames_received} frames | {summary.state} | "
                 f"{summary.channel_count} canais"
             )
             item = QListWidgetItem(label)

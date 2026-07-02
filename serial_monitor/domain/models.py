@@ -6,7 +6,7 @@ from typing import Callable, Dict, List
 
 import numpy as np
 
-from .enums import ProtocolMode, SignalType
+from .enums import ProtocolMode, RecordingState, SignalType
 
 
 @dataclass(slots=True)
@@ -206,6 +206,29 @@ class ProcessedAcquisitionSnapshot:
         return self.communication.valid_frames
 
 
+
+
+@dataclass(frozen=True, slots=True)
+class RecordingStatus:
+    state: RecordingState = RecordingState.IDLE
+    session_id: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    duration_seconds: float = 0.0
+    frames_enqueued: int = 0
+    frames_written: int = 0
+    queue_size: int = 0
+    queue_capacity: int = 0
+    file_size_bytes: int = 0
+    output_path: Path | None = None
+    partial_path: Path | None = None
+    end_reason: str | None = None
+    error_message: str | None = None
+
+    @property
+    def is_active(self) -> bool:
+        return self.state in {RecordingState.RECORDING, RecordingState.FINALIZING}
+
 @dataclass(frozen=True, slots=True)
 class StoredSessionSummary:
     session_id: str
@@ -222,6 +245,9 @@ class StoredSessionSummary:
     channel_labels: List[str]
     metadata_path: Path
     data_path: Path
+    state: str = "completed"
+    duration_seconds: float = 0.0
+    end_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,7 +5,7 @@ import platform
 import sys
 from pathlib import Path
 
-REQUIRED_MODULES = ["PyQt5", "pyqtgraph", "serial", "numpy", "scipy"]
+REQUIRED_MODULES = ["PyQt5", "pyqtgraph", "serial", "numpy", "scipy", "h5py"]
 
 
 def main() -> int:

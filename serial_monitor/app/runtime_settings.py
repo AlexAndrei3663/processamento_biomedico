@@ -8,16 +8,15 @@ from typing import Sequence
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
-    """Configurações de execução da aplicação.
-
-    Essas opções não pertencem à sessão de aquisição. Elas controlam como a
-    interface roda no equipamento alvo, especialmente na Raspberry Pi.
-    """
+    """Configurações de execução da aplicação e do gravador contínuo."""
 
     fullscreen: bool = False
     update_interval_ms: int = 100
     max_plot_points: int = 5000
     data_dir: Path = Path("data")
+    recording_queue_capacity: int = 8192
+    recording_batch_size: int = 256
+    recording_flush_interval_ms: int = 1000
 
     @property
     def sessions_dir(self) -> Path:
@@ -53,6 +52,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=Path("data"),
         help="diretório base para sessões salvas e presets",
     )
+    parser.add_argument(
+        "--recording-queue-capacity",
+        type=int,
+        default=8192,
+        help="quantidade máxima de frames aguardando escrita HDF5",
+    )
+    parser.add_argument(
+        "--recording-batch-size",
+        type=int,
+        default=256,
+        help="quantidade de frames por lote de escrita HDF5",
+    )
+    parser.add_argument(
+        "--recording-flush-interval-ms",
+        type=int,
+        default=1000,
+        help="intervalo máximo entre flushes do HDF5",
+    )
     return parser
 
 
@@ -62,10 +79,23 @@ def parse_runtime_settings(argv: Sequence[str] | None = None) -> RuntimeSettings
         raise ValueError("--update-interval-ms deve estar entre 50 e 2000 ms.")
     if not 100 <= namespace.max_plot_points <= 100_000:
         raise ValueError("--max-plot-points deve estar entre 100 e 100000 pontos.")
+    if not 128 <= namespace.recording_queue_capacity <= 1_000_000:
+        raise ValueError("--recording-queue-capacity deve estar entre 128 e 1000000.")
+    if not 1 <= namespace.recording_batch_size <= namespace.recording_queue_capacity:
+        raise ValueError(
+            "--recording-batch-size deve estar entre 1 e a capacidade da fila."
+        )
+    if not 50 <= namespace.recording_flush_interval_ms <= 60_000:
+        raise ValueError(
+            "--recording-flush-interval-ms deve estar entre 50 e 60000 ms."
+        )
 
     return RuntimeSettings(
         fullscreen=bool(namespace.fullscreen),
         update_interval_ms=int(namespace.update_interval_ms),
         max_plot_points=int(namespace.max_plot_points),
         data_dir=Path(namespace.data_dir),
+        recording_queue_capacity=int(namespace.recording_queue_capacity),
+        recording_batch_size=int(namespace.recording_batch_size),
+        recording_flush_interval_ms=int(namespace.recording_flush_interval_ms),
     )

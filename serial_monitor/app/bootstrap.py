@@ -9,8 +9,9 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from serial_monitor.app.runtime_settings import RuntimeSettings, parse_runtime_settings
 from serial_monitor.app.system_report import collect_system_report
 from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
+from serial_monitor.application.recording_service import RecordingQueueFullError, RecordingService
 from serial_monitor.application.session_service import SessionService
-from serial_monitor.domain.models import AcquisitionSnapshot
+from serial_monitor.domain.models import AcquisitionSnapshot, SampleFrame
 from serial_monitor.infrastructure.serial.protocol import FrameCsvParser
 from serial_monitor.infrastructure.serial.serial_reader import SerialReader
 from serial_monitor.infrastructure.storage.config_repository import ConfigRepository
@@ -18,7 +19,6 @@ from serial_monitor.infrastructure.storage.session_repository import SessionRepo
 from serial_monitor.processing.filter_pipeline import ProcessingService
 from serial_monitor.ui.main_window import MainWindow
 
-from serial_monitor.domain.models import SampleFrame
 
 class MainController(QObject):
     """Controlador da navegação, aquisição, processamento, armazenamento, presets e execução em Raspberry Pi."""
@@ -32,6 +32,7 @@ class MainController(QObject):
         processing_service: ProcessingService,
         session_repository: SessionRepository,
         config_repository: ConfigRepository,
+        recording_service: RecordingService,
         settings: RuntimeSettings,
     ) -> None:
         super().__init__()
@@ -42,6 +43,7 @@ class MainController(QObject):
         self.processing_service = processing_service
         self.session_repository = session_repository
         self.config_repository = config_repository
+        self.recording_service = recording_service
         self.settings = settings
         self.parser = FrameCsvParser()
         self._session = None
@@ -55,6 +57,7 @@ class MainController(QObject):
         self.view_timer.start()
 
         self._connect_signals()
+        self.window.update_recording_status(self.recording_service.status())
         self.refresh_presets()
         self.refresh_stored_sessions()
         self.log("INFO", "Controlador inicializado.")
@@ -90,7 +93,9 @@ class MainController(QObject):
         live.connect_button.clicked.connect(self.connect_serial)
         live.disconnect_button.clicked.connect(self.disconnect_serial)
         live.clear_buffers_button.clicked.connect(self.clear_buffers)
-        live.save_session_button.clicked.connect(self.save_current_session)
+        live.start_recording_button.clicked.connect(self.start_recording)
+        live.finalize_recording_button.clicked.connect(self.finalize_recording)
+        live.cancel_recording_button.clicked.connect(self.cancel_recording)
         live.clear_log_button.clicked.connect(self.window.clear_logs)
         live.update_interval_changed.connect(self.update_view_interval)
         live.filter_toggled.connect(self.on_filter_toggled)
@@ -150,7 +155,14 @@ class MainController(QObject):
     def shutdown(self) -> None:
         if self.serial_reader.isRunning():
             self.serial_reader.stop()
+        if self.recording_service.is_active:
+            communication = self.acquisition_service.snapshot().communication
+            self.recording_service.finalize(
+                communication,
+                reason="application_shutdown",
+            )
         self.acquisition_service.stop()
+        self.window.update_recording_status(self.recording_service.status())
 
     @pyqtSlot()
     def start_monitoring_from_menu(self) -> None:
@@ -345,6 +357,8 @@ class MainController(QObject):
         try:
             frame = self.parser.parse_line(line, self._session).frame
             accepted = self.acquisition_service.ingest_frame(frame)
+            if accepted:
+                self._enqueue_recording_frame(frame)
         except Exception as exc:
             self.log("ERRO", f"Não foi possível inserir frame no buffer: {exc}")
             return
@@ -390,35 +404,74 @@ class MainController(QObject):
     def clear_buffers(self) -> None:
         self._stored_raw_snapshot = None
         self._last_rendered_sequence_id = None
-
-        self.acquisition_service.reset()
+        self.acquisition_service.clear_buffers()
         self.window.clear_signal_tabs()
-
         self.refresh_live_view(force=True)
-        self.log("BUFFER", "Buffers multicanais limpos.")
+        self.log(
+            "BUFFER",
+            "Buffers de visualização limpos. A gravação contínua, quando ativa, não é apagada.",
+        )
 
     @pyqtSlot()
-    def save_current_session(self) -> None:
-        if self._session is None:
-            self.log("ERRO", "Não há sessão validada para salvar.")
+    def start_recording(self) -> None:
+        if self._session is None and not self.validate_session():
             return
+        if self._stored_raw_snapshot is not None:
+            self.log("ERRO", "Não é possível gravar enquanto uma sessão armazenada está aberta.")
+            return
+        assert self._session is not None
 
-        snapshot = self.acquisition_service.snapshot()
         try:
-            summary = self.session_repository.save(
-                session=self._session,
-                snapshot=snapshot,
+            status = self.recording_service.start(
+                self._session,
                 active_filters=self.processing_service.enabled_filters_snapshot(),
+                communication_baseline=self.acquisition_service.snapshot().communication,
             )
         except Exception as exc:
-            self.log("ERRO", f"Não foi possível salvar a sessão: {exc}")
+            self.log("ERRO", f"Não foi possível iniciar a gravação: {exc}")
             return
 
-        self.refresh_stored_sessions()
+        self.window.update_recording_status(status)
         self.log(
-            "STORAGE",
-            f"Sessão salva: {summary.session_id} ({summary.frames_received} frames, {summary.channel_count} canais).",
+            "GRAVAÇÃO",
+            f"Gravação contínua iniciada: {status.session_id}. Os dados serão persistidos em HDF5.",
         )
+
+    @pyqtSlot()
+    def finalize_recording(self, reason: str = "user") -> None:
+        if not self.recording_service.is_active:
+            self.window.update_recording_status(self.recording_service.status())
+            return
+
+        communication = self.acquisition_service.snapshot().communication
+        status = self.recording_service.finalize(communication, reason=reason)
+        self.window.update_recording_status(status)
+
+        if status.state.value == "completed":
+            self.refresh_stored_sessions()
+            self.log(
+                "GRAVAÇÃO",
+                f"Sessão finalizada: {status.session_id} ({status.frames_written} frames).",
+            )
+        elif status.state.value == "failed":
+            self.log(
+                "ERRO",
+                f"Falha ao finalizar sessão: {status.error_message or 'erro desconhecido'}",
+            )
+
+    @pyqtSlot()
+    def cancel_recording(self) -> None:
+        if not self.recording_service.is_active:
+            return
+        if not self._confirm_action(
+            "Cancelar gravação",
+            "Deseja cancelar a gravação atual e excluir o arquivo parcial?",
+        ):
+            return
+
+        status = self.recording_service.cancel()
+        self.window.update_recording_status(status)
+        self.log("GRAVAÇÃO", "Gravação cancelada e arquivo parcial removido.")
 
     @pyqtSlot()
     def open_selected_stored_session(self) -> None:
@@ -438,6 +491,7 @@ class MainController(QObject):
 
         self._session = stored.session
         self._stored_raw_snapshot = stored.snapshot
+        self._last_rendered_sequence_id = None
         self.acquisition_service.configure(stored.session)
         self.processing_service.configure(stored.session)
         self.processing_service.set_enabled_filters(stored.active_filters)
@@ -474,7 +528,7 @@ class MainController(QObject):
             (
                 "Deseja excluir definitivamente a sessão selecionada?\n\n"
                 f"ID: {session_id}\n\n"
-                "Essa ação remove os arquivos JSON, NPZ e CSV associados."
+                "Essa ação remove os arquivos HDF5 e CSV associados."
             ),
         ):
             self.log("STORAGE", "Exclusão de sessão cancelada pelo usuário.")
@@ -507,40 +561,28 @@ class MainController(QObject):
 
     @pyqtSlot()
     def refresh_live_view(self, force: bool = False) -> None:
-        # Não processa nem redesenha gráficos quando outra página está aberta.
+        # O estado do gravador é atualizado mesmo sem novas amostras.
+        self.window.update_recording_status(self.recording_service.status())
+
         if (
             not force
             and self.window.stack.currentWidget() is not self.window.live_page
         ):
             return
 
-        raw_snapshot = (
-            self._stored_raw_snapshot
-            or self.acquisition_service.snapshot()
-        )
-
-        # Não recalcula filtros, métricas, FFT e gráficos quando não entrou
-        # nenhuma amostra nova desde a última atualização.
+        raw_snapshot = self._stored_raw_snapshot or self.acquisition_service.snapshot()
         if (
             not force
-            and raw_snapshot.last_sequence_id
-            == self._last_rendered_sequence_id
+            and raw_snapshot.last_sequence_id == self._last_rendered_sequence_id
         ):
             return
 
         processed_snapshot = self.processing_service.process(raw_snapshot)
-
         self.window.update_live_view(processed_snapshot)
 
-        if (
-            force
-            or processed_snapshot.frames_received
-            != self._last_summary_frame_count
-        ):
+        if force or processed_snapshot.frames_received != self._last_summary_frame_count:
             self.window.update_buffer_summary(processed_snapshot)
-            self._last_summary_frame_count = (
-                processed_snapshot.frames_received
-            )
+            self._last_summary_frame_count = processed_snapshot.frames_received
 
         self._last_rendered_sequence_id = raw_snapshot.last_sequence_id
 
@@ -552,6 +594,12 @@ class MainController(QObject):
         except Exception as exc:
             self.log("ERRO", f"Frame recebido, mas não inserido nos buffers: {exc}")
             return
+
+        if accepted:
+            try:
+                self._enqueue_recording_frame(frame)
+            except RecordingQueueFullError:
+                return
 
         snapshot = self.acquisition_service.snapshot()
         if not accepted:
@@ -577,6 +625,22 @@ class MainController(QObject):
                 ),
             )
 
+    def _enqueue_recording_frame(self, frame: SampleFrame) -> None:
+        if not self.recording_service.is_recording:
+            return
+        try:
+            self.recording_service.enqueue_frame(frame)
+        except RecordingQueueFullError as exc:
+            self.recording_service.fail(
+                str(exc),
+                self.acquisition_service.snapshot().communication,
+            )
+            self.window.update_recording_status(self.recording_service.status())
+            self.log("ERRO", str(exc))
+            if self.serial_reader.isRunning():
+                self.serial_reader.stop()
+            raise
+
     @pyqtSlot(str)
     def on_protocol_error(self, message: str) -> None:
         self.acquisition_service.record_invalid_frame()
@@ -592,6 +656,8 @@ class MainController(QObject):
         self.window.update_connection_state(connected)
         if not connected:
             self.acquisition_service.stop()
+            if self.recording_service.is_active:
+                self.finalize_recording(reason="serial_disconnected")
         state = "conectado" if connected else "desconectado"
         self.refresh_live_view(force=True)
         self.log("STATUS", f"Serial {state}.")
@@ -602,7 +668,10 @@ class MainController(QObject):
             [
                 f"ID: {summary.session_id}",
                 f"Criada em: {summary.created_at}",
-                f"Frames: {summary.frames_received}",
+                f"Frames gravados: {summary.frames_received}",
+                f"Estado: {summary.state}",
+                f"Duração: {summary.duration_seconds:.3f} s",
+                f"Motivo de encerramento: {summary.end_reason or '--'}",
                 f"Eventos de gap: {summary.gap_events}",
                 f"Frames ausentes estimados: {summary.missing_frames}",
                 f"Frames duplicados: {summary.duplicate_frames}",
@@ -615,8 +684,7 @@ class MainController(QObject):
                 "Ordem dos canais:",
                 *(f"  - {label}" for label in summary.channel_labels),
                 "",
-                f"Metadados: {summary.metadata_path}",
-                f"Dados: {summary.data_path}",
+                f"Arquivo HDF5: {summary.data_path}",
                 f"CSV: {csv_path if csv_path.exists() else 'ainda não exportado'}",
             ]
         )
@@ -640,6 +708,12 @@ def run() -> int:
         processing_service=ProcessingService(),
         session_repository=SessionRepository(settings.sessions_dir),
         config_repository=ConfigRepository(settings.presets_dir),
+        recording_service=RecordingService(
+            settings.sessions_dir,
+            queue_capacity=settings.recording_queue_capacity,
+            batch_size=settings.recording_batch_size,
+            flush_interval_s=settings.recording_flush_interval_ms / 1000.0,
+        ),
         settings=settings,
     )
     window.controller = controller  # type: ignore[attr-defined]
