@@ -28,6 +28,14 @@ def main() -> int:
             status = 1
 
     print()
+    profiles_path = Path("config/conversion_profiles.json")
+    if profiles_path.exists():
+        print(f"[OK] Perfis de conversão: {profiles_path}")
+    else:
+        print(f"[ERRO] Perfis de conversão ausentes: {profiles_path}")
+        status = 1
+
+    print()
     print("Portas seriais detectadas:")
     try:
         from serial.tools import list_ports

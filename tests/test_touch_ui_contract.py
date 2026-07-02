@@ -18,7 +18,6 @@ def test_config_page_does_not_use_line_edit_fields():
     assert "QLineEdit" not in source
     assert "QComboBox" in source
     assert "QSpinBox" in source
-    assert "QDoubleSpinBox" in source
 
 
 def test_channel_selection_is_list_based_and_ordered():

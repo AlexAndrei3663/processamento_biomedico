@@ -8,7 +8,7 @@ from PyQt5.QtGui import QCloseEvent, QKeyEvent
 from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
 from serial_monitor.app.runtime_settings import RuntimeSettings
-from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, RecordingStatus, SessionConfig, StoredSessionSummary
+from serial_monitor.domain.models import ConversionProfile, ProcessedAcquisitionSnapshot, RecordingStatus, SessionConfig, StoredSessionSummary
 from serial_monitor.domain.enums import WindowPageIndex
 from serial_monitor.infrastructure.storage.config_repository import SessionPreset
 from serial_monitor.ui.pages.config_page import ConfigPage
@@ -71,6 +71,34 @@ class MainWindow(QMainWindow):
                 left: 10px;
                 padding: 0 4px;
             }
+
+            /* A página ao vivo precisa caber integralmente em 1024 x 600. */
+            QWidget#livePage QPushButton {
+                min-height: 36px;
+                max-height: 40px;
+                padding: 3px 7px;
+                font-size: 13px;
+            }
+            QWidget#livePage QTabBar::tab {
+                min-height: 32px;
+                min-width: 90px;
+                padding: 4px 8px;
+                font-size: 13px;
+            }
+            QWidget#livePage QCheckBox,
+            QWidget#livePage QRadioButton {
+                min-height: 32px;
+                spacing: 8px;
+                font-size: 13px;
+            }
+            QWidget#livePage QCheckBox::indicator,
+            QWidget#livePage QRadioButton::indicator {
+                width: 22px;
+                height: 22px;
+            }
+            QWidget#livePage QLabel {
+                font-size: 12px;
+            }
             """
         )
 
@@ -84,6 +112,10 @@ class MainWindow(QMainWindow):
             max_plot_points=self.settings.max_plot_points,
         )
         self.stored_page = StoredPage()
+        self.config_page.set_performance_settings(
+            self.settings.update_interval_ms,
+            self.settings.max_plot_points,
+        )
 
         self.stack.addWidget(self.menu_page)
         self.stack.addWidget(self.config_page)
@@ -114,13 +146,26 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(WindowPageIndex.STORED_PAGE)
         self._show_status_message("Sinais armazenados")
 
+    def enter_fullscreen(self) -> None:
+        self.live_page.set_fullscreen_mode(True)
+        status_bar = self.statusBar()
+        if status_bar is not None:
+            status_bar.setVisible(False)
+        self.showFullScreen()
+
+    def leave_fullscreen(self) -> None:
+        self.live_page.set_fullscreen_mode(False)
+        self.showNormal()
+        status_bar = self.statusBar()
+        if status_bar is not None:
+            status_bar.setVisible(True)
+        self._show_status_message("Modo janela")
+
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
-            self.showNormal()
-            self._show_status_message("Modo janela")
+            self.leave_fullscreen()
         else:
-            self.showFullScreen()
-            self._show_status_message("Modo tela cheia")
+            self.enter_fullscreen()
 
     def append_log(self, level: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -165,6 +210,10 @@ class MainWindow(QMainWindow):
     def finish_stored_export(self, message: str, *, success: bool) -> None:
         self.stored_page.finish_export(message, success=success)
 
+
+    def set_conversion_profiles(self, profiles: list[ConversionProfile]) -> None:
+        self.config_page.set_conversion_profiles(profiles)
+
     def update_presets(self, presets: list[SessionPreset]) -> None:
         self.config_page.set_presets(presets)
 
@@ -177,7 +226,7 @@ class MainWindow(QMainWindow):
                 self.toggle_fullscreen()
                 return
             if a0.key() == Qt.Key.Key_Escape and self.isFullScreen():
-                self.showNormal()
+                self.leave_fullscreen()
                 return
         super().keyPressEvent(a0)
 
@@ -239,5 +288,6 @@ class MainWindow(QMainWindow):
         return self.config_page.signal_order_text
 
     @property
-    def sample_frame_text(self) -> str:
-        return self.config_page.sample_frame_text
+    def channel_conversion_configs(self) -> list[dict]:
+        return self.config_page.channel_conversion_configs
+

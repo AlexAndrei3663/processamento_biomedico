@@ -111,3 +111,44 @@ def test_invalid_and_checksum_errors_are_counted_separately():
     stats = service.snapshot().communication
     assert stats.invalid_frames == 2
     assert stats.checksum_errors == 1
+
+
+def test_start_accepts_first_sequence_after_reconnection_as_new_baseline():
+    session = build_session(window_size=5)
+    parser = FrameCsvParser()
+    service = LiveAcquisitionService()
+    service.configure(session)
+
+    service.start()
+    assert service.ingest_frame(frame(parser, session, 100, 5_000_000))
+    assert service.ingest_frame(frame(parser, session, 101, 5_001_000))
+    service.stop()
+
+    # Simula reinício do firmware: sequência e timestamp retornam a valores
+    # menores. O primeiro quadro após a nova conexão deve ser aceito.
+    service.start()
+    assert service.ingest_frame(frame(parser, session, 1, 10_000))
+
+    snapshot = service.snapshot()
+    assert snapshot.last_sequence_id == 1
+    assert snapshot.last_timestamp_us == 10_000
+    assert snapshot.channels[0].sequence_ids.tolist() == [1]
+    assert snapshot.communication.out_of_order_frames == 0
+    assert snapshot.communication.timestamp_regressions == 0
+
+
+def test_clear_buffers_can_reset_stream_baseline_without_erasing_diagnostics():
+    session = build_session(window_size=5)
+    parser = FrameCsvParser()
+    service = LiveAcquisitionService()
+    service.configure(session)
+
+    assert service.ingest_frame(frame(parser, session, 10, 100_000))
+    assert not service.ingest_frame(frame(parser, session, 10, 101_000))
+
+    service.clear_buffers(reset_stream_baseline=True)
+    assert service.ingest_frame(frame(parser, session, 2, 5_000))
+
+    snapshot = service.snapshot()
+    assert snapshot.channels[0].sequence_ids.tolist() == [2]
+    assert snapshot.communication.duplicate_frames == 1

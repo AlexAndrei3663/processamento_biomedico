@@ -22,6 +22,7 @@ class RingBuffer:
         self._sequence_ids = np.zeros(capacity, dtype=np.uint32)
         self._write_index = 0
         self._count = 0
+        self._time_origin_us: int | None = None
 
     @property
     def count(self) -> int:
@@ -37,6 +38,7 @@ class RingBuffer:
         self._sequence_ids.fill(0)
         self._write_index = 0
         self._count = 0
+        self._time_origin_us = None
 
     def append(
         self,
@@ -44,6 +46,9 @@ class RingBuffer:
         timestamp_us: int,
         sequence_id: int,
     ) -> None:
+        if self._time_origin_us is None:
+            self._time_origin_us = int(timestamp_us)
+
         self._values[self._write_index] = value
         self._timestamps_us[self._write_index] = timestamp_us
         self._sequence_ids[self._write_index] = sequence_id
@@ -70,7 +75,17 @@ class RingBuffer:
         sequence_ids = self._sequence_ids[indices].copy()
 
         if len(timestamps_us) > 0:
-            x_seconds = (timestamps_us.astype(np.float64) - float(timestamps_us[0])) / 1_000_000.0
+            time_origin_us = (
+                self._time_origin_us
+                if self._time_origin_us is not None
+                else int(timestamps_us[0])
+            )
+            # A origem permanece fixa enquanto o buffer circular avança. Assim,
+            # o eixo X acompanha o timestamp real e não volta para zero quando
+            # as amostras mais antigas são sobrescritas.
+            x_seconds = (
+                timestamps_us.astype(np.float64) - float(time_origin_us)
+            ) / 1_000_000.0
             last_value = float(values[-1])
             last_timestamp_us = int(timestamps_us[-1])
         else:

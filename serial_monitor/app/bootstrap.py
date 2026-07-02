@@ -8,14 +8,15 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from serial_monitor.app.runtime_settings import RuntimeSettings, parse_runtime_settings
 from serial_monitor.app.system_report import collect_system_report
+from serial_monitor.application.conversion_service import ConversionService
 from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
 from serial_monitor.application.recording_service import RecordingQueueFullError, RecordingService
 from serial_monitor.application.session_service import SessionService
 from serial_monitor.application.storage_workers import CsvExportWorker, IntegrityCheckWorker
 from serial_monitor.domain.models import AcquisitionSnapshot, SampleFrame, StoredSessionSummary
-from serial_monitor.infrastructure.serial.protocol import FrameCsvParser
 from serial_monitor.infrastructure.serial.serial_reader import SerialReader
 from serial_monitor.infrastructure.storage.config_repository import ConfigRepository
+from serial_monitor.infrastructure.storage.conversion_profile_repository import ConversionProfileRepository
 from serial_monitor.infrastructure.storage.session_repository import SessionRepository
 from serial_monitor.processing.filter_pipeline import ProcessingService
 from serial_monitor.ui.main_window import MainWindow
@@ -33,6 +34,7 @@ class MainController(QObject):
         processing_service: ProcessingService,
         session_repository: SessionRepository,
         config_repository: ConfigRepository,
+        conversion_profile_repository: ConversionProfileRepository,
         recording_service: RecordingService,
         settings: RuntimeSettings,
     ) -> None:
@@ -44,9 +46,9 @@ class MainController(QObject):
         self.processing_service = processing_service
         self.session_repository = session_repository
         self.config_repository = config_repository
+        self.conversion_profile_repository = conversion_profile_repository
         self.recording_service = recording_service
         self.settings = settings
-        self.parser = FrameCsvParser()
         self._session = None
         self._stored_raw_snapshot: AcquisitionSnapshot | None = None
         self._last_summary_frame_count = -1
@@ -60,6 +62,7 @@ class MainController(QObject):
         self.view_timer.start()
 
         self._connect_signals()
+        self._load_conversion_profiles()
         self.window.update_recording_status(self.recording_service.status())
         self._finalize_interrupted_sessions()
         self._refresh_presets(auto_load_first=True)
@@ -85,10 +88,8 @@ class MainController(QObject):
         config.load_preset_button.clicked.connect(self.load_config_preset)
         config.delete_preset_button.clicked.connect(self.delete_config_preset)
         config.refresh_presets_button.clicked.connect(self.refresh_presets)
-        config.validate_frame_button.clicked.connect(self.validate_sample_frame)
-        config.ingest_frame_button.clicked.connect(self.ingest_sample_frame)
-        config.clear_buffers_button.clicked.connect(self.clear_buffers)
         config.clear_log_button.clicked.connect(self.window.clear_logs)
+        config.update_interval_changed.connect(self.update_view_interval)
 
         live.open_config_button.clicked.connect(self.window.show_config)
         live.open_stored_button.clicked.connect(self.open_stored_page)
@@ -100,7 +101,6 @@ class MainController(QObject):
         live.start_recording_button.clicked.connect(self.start_recording)
         live.finalize_recording_button.clicked.connect(self.finalize_recording)
         live.cancel_recording_button.clicked.connect(self.cancel_recording)
-        live.update_interval_changed.connect(self.update_view_interval)
         live.filter_toggled.connect(self.on_filter_toggled)
         live.display_mode_changed.connect(self.on_display_mode_changed)
 
@@ -119,6 +119,19 @@ class MainController(QObject):
         self.serial_reader.error_occurred.connect(self.on_error)
         self.serial_reader.protocol_error.connect(self.on_protocol_error)
         self.serial_reader.connection_changed.connect(self.on_connection_changed)
+
+    def _load_conversion_profiles(self) -> None:
+        try:
+            profiles = self.conversion_profile_repository.list_profiles()
+        except Exception as exc:
+            self.window.set_conversion_profiles([])
+            self.log("ERRO", f"Não foi possível carregar perfis de conversão: {exc}")
+            return
+        self.window.set_conversion_profiles(profiles)
+        self.log(
+            "CONVERSAO",
+            f"Perfis de conversão carregados: {len(profiles)}.",
+        )
 
     def log(self, level: str, message: str) -> None:
         self.window.append_log(level, message)
@@ -143,7 +156,8 @@ class MainController(QObject):
             (
                 f"{report.platform} | Python {report.python} | CPUs={report.cpu_count} | "
                 f"update={self.settings.update_interval_ms} ms | max_plot_points={self.settings.max_plot_points} | "
-                f"data_dir={self.settings.data_dir}"
+                f"data_dir={self.settings.data_dir} | "
+                f"conversion_profiles={self.settings.conversion_profiles_path}"
             ),
         )
 
@@ -242,6 +256,7 @@ class MainController(QObject):
                 base_sample_rate_hz=self._parse_positive_int(self.window.sample_rate_text, "Taxa base"),
                 window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
                 signal_order_text=self.window.signal_order_text,
+                channel_conversions=self.window.channel_conversion_configs,
             )
         except Exception as exc:
             self.log("ERRO", f"Não foi possível salvar preset: {exc}")
@@ -323,6 +338,7 @@ class MainController(QObject):
                 base_sample_rate_hz=self._parse_positive_int(self.window.sample_rate_text, "Taxa base"),
                 window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
                 signal_order_text=self.window.signal_order_text,
+                channel_conversions=self.window.channel_conversion_configs,
             )
             self._stored_raw_snapshot = None
             self.acquisition_service.configure(self._session)
@@ -344,7 +360,15 @@ class MainController(QObject):
             return False
 
         ordered_signals = ", ".join(
-            f"{channel.index}:{channel.signal_type.value}" for channel in self._session.channels
+            (
+                f"{channel.index}:{channel.signal_type.value}"
+                + (
+                    f"[{channel.conversion.profile_id}]"
+                    if channel.conversion.enabled
+                    else "[bruto]"
+                )
+            )
+            for channel in self._session.channels
         )
         self.log(
             "OK",
@@ -357,59 +381,6 @@ class MainController(QObject):
         self.refresh_live_view(force=True)
         return True
 
-    @pyqtSlot()
-    def validate_sample_frame(self) -> None:
-        if self._session is None and not self.validate_session():
-            return
-        assert self._session is not None
-
-        line = self.window.sample_frame_text
-        try:
-            parsed = self.parser.parse_line(line, self._session)
-        except Exception as exc:
-            self.log("ERRO", f"Frame de teste inválido: {exc}")
-            return
-
-        frame = parsed.frame
-        pairs = []
-        for channel, value in zip(self._session.channels, frame.values_in_order, strict=True):
-            pairs.append(f"ch{channel.index}:{channel.signal_type.value}={value:g} {channel.unit}")
-        self.log(
-            "OK",
-            (
-                f"Frame aceito: seq={frame.sequence_id}, timestamp_us={frame.timestamp_us}, "
-                + ", ".join(pairs)
-            ),
-        )
-
-    @pyqtSlot()
-    def ingest_sample_frame(self) -> None:
-        if self._session is None and not self.validate_session():
-            return
-        assert self._session is not None
-
-        self._stored_raw_snapshot = None
-        line = self.window.sample_frame_text
-        try:
-            frame = self.parser.parse_line(line, self._session).frame
-            accepted = self.acquisition_service.ingest_frame(frame)
-            if accepted:
-                self._enqueue_recording_frame(frame)
-        except Exception as exc:
-            self.log("ERRO", f"Não foi possível inserir frame no buffer: {exc}")
-            return
-
-        self.refresh_live_view(force=True)
-        if accepted:
-            self.log(
-                "BUFFER",
-                f"Frame seq={frame.sequence_id} inserido nos buffers.",
-            )
-        else:
-            self.log(
-                "AVISO",
-                f"Frame seq={frame.sequence_id} rejeitado pelo diagnóstico.",
-            )
 
     @pyqtSlot()
     def connect_serial(self) -> None:
@@ -420,7 +391,9 @@ class MainController(QObject):
             return
         assert self._session is not None
         self._stored_raw_snapshot = None
+        self._last_rendered_sequence_id = None
         self.acquisition_service.start()
+        self.window.clear_signal_tabs()
         self.refresh_live_view(force=True)
         self.log("INFO", f"Tentando abrir porta serial {self._session.port} a {self._session.baudrate} baud...")
         self.serial_reader.configure(self._session)
@@ -440,12 +413,15 @@ class MainController(QObject):
     def clear_buffers(self) -> None:
         self._stored_raw_snapshot = None
         self._last_rendered_sequence_id = None
-        self.acquisition_service.clear_buffers()
+        self.acquisition_service.clear_buffers(reset_stream_baseline=True)
         self.window.clear_signal_tabs()
         self.refresh_live_view(force=True)
         self.log(
             "BUFFER",
-            "Buffers de visualização limpos. A gravação contínua, quando ativa, não é apagada.",
+            (
+                "Buffers de visualização e referências de sequência/timestamp "
+                "reiniciados. A gravação contínua, quando ativa, não é apagada."
+            ),
         )
 
     @pyqtSlot()
@@ -679,7 +655,12 @@ class MainController(QObject):
 
     @pyqtSlot(int, str)
     def on_display_mode_changed(self, channel_index: int, mode: str) -> None:
-        label = "processado" if mode == "processed" else "bruto"
+        labels = {
+            "raw": "bruto",
+            "converted": "convertido",
+            "processed": "processado",
+        }
+        label = labels.get(mode, mode)
         self.log("VIEW", f"Canal ch{channel_index}: visualização alterada para sinal {label}.")
         self.refresh_live_view(force=True)
 
@@ -843,14 +824,21 @@ def run() -> int:
     app = QApplication([sys.argv[0]])
     window = MainWindow(settings)
 
+    conversion_profile_repository = ConversionProfileRepository(
+        settings.conversion_profiles_path
+    )
+
     controller = MainController(
         window=window,
-        session_service=SessionService(),
+        session_service=SessionService(conversion_profile_repository),
         serial_reader=SerialReader(),
         acquisition_service=LiveAcquisitionService(),
-        processing_service=ProcessingService(),
+        processing_service=ProcessingService(
+            conversion_service=ConversionService()
+        ),
         session_repository=SessionRepository(settings.sessions_dir),
         config_repository=ConfigRepository(settings.presets_dir),
+        conversion_profile_repository=conversion_profile_repository,
         recording_service=RecordingService(
             settings.sessions_dir,
             queue_capacity=settings.recording_queue_capacity,
@@ -862,7 +850,7 @@ def run() -> int:
     window.controller = controller  # type: ignore[attr-defined]
 
     if settings.fullscreen:
-        window.showFullScreen()
+        window.enter_fullscreen()
     else:
         window.show()
     return app.exec_()

@@ -1,0 +1,128 @@
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_update_interval_control_is_on_configuration_page() -> None:
+    config_source = (ROOT / "serial_monitor/ui/pages/config_page.py").read_text(
+        encoding="utf-8"
+    )
+    live_source = (ROOT / "serial_monitor/ui/pages/live_page.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "update_interval_spinbox" in config_source
+    assert "update_interval_changed" in config_source
+    assert "update_interval_spinbox" not in live_source
+
+
+def test_touch_configuration_exposes_conversion_controls() -> None:
+    source = (ROOT / "serial_monitor/ui/pages/config_page.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "conversion_enabled_checkbox" in source
+    assert "conversion_profile_selector" in source
+    assert "channel_conversion_configs" in source
+
+
+def test_live_tab_distinguishes_raw_converted_and_processed() -> None:
+    source = (ROOT / "serial_monitor/ui/widgets/signal_tab.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'RAW_MODE = "raw"' in source
+    assert 'CONVERTED_MODE = "converted"' in source
+    assert 'PROCESSED_MODE = "processed"' in source
+
+
+def test_manual_protocol_test_controls_were_removed() -> None:
+    config_source = (ROOT / "serial_monitor/ui/pages/config_page.py").read_text(
+        encoding="utf-8"
+    )
+    controller_source = (ROOT / "serial_monitor/app/bootstrap.py").read_text(
+        encoding="utf-8"
+    )
+    main_source = (ROOT / "serial_monitor/ui/main_window.py").read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        "_build_protocol_test_group",
+        "validate_frame_button",
+        "ingest_frame_button",
+        "test_sequence_input",
+        "test_timestamp_input",
+        "sample_frame_text",
+    ):
+        assert token not in config_source
+        assert token not in controller_source
+        assert token not in main_source
+
+
+def test_live_graph_layout_is_bounded_focusable_and_keeps_recording_controls() -> None:
+    live_source = (ROOT / "serial_monitor/ui/pages/live_page.py").read_text(
+        encoding="utf-8"
+    )
+    tab_source = (ROOT / "serial_monitor/ui/widgets/signal_tab.py").read_text(
+        encoding="utf-8"
+    )
+    plot_source = (
+        ROOT / "serial_monitor/ui/widgets/signal_plot_widget.py"
+    ).read_text(encoding="utf-8")
+    main_source = (ROOT / "serial_monitor/ui/main_window.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "QScrollArea" not in live_source
+    assert "set_fullscreen_mode" in live_source
+    assert "self.controls_group.setVisible(True)" in live_source
+    assert "self.recording_group.setVisible(True)" in live_source
+    assert "self.controls_group.setVisible(not enabled)" not in live_source
+    assert "self.recording_group.setVisible(not enabled)" not in live_source
+    assert 'self.start_recording_button = QPushButton("Gravar")' in live_source
+    assert 'self.finalize_recording_button = QPushButton("Finalizar")' in live_source
+    assert 'self.cancel_recording_button = QPushButton("Cancelar")' in live_source
+
+    assert "QSplitter" in tab_source
+    assert "self.side_scroll = QScrollArea()" in tab_source
+    assert "set_plot_focused" in tab_source
+    assert "self.side_scroll.hide()" in tab_source
+    assert "setMinimumSize(0, 0)" in plot_source
+    assert "QSizePolicy.Expanding" in plot_source
+    assert "enter_fullscreen" in main_source
+    assert "leave_fullscreen" in main_source
+    assert "status_bar.setVisible(False)" in main_source
+
+
+def test_controller_does_not_reference_removed_config_buffer_button() -> None:
+    controller_source = (ROOT / "serial_monitor/app/bootstrap.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "config.clear_buffers_button" not in controller_source
+    assert "live.clear_buffers_button" in controller_source
+
+
+def test_reconnection_resets_sequence_baseline_and_plot_follows_timestamp() -> None:
+    controller_source = (ROOT / "serial_monitor/app/bootstrap.py").read_text(
+        encoding="utf-8"
+    )
+    acquisition_source = (
+        ROOT / "serial_monitor/application/live_acquisition_service.py"
+    ).read_text(encoding="utf-8")
+    ring_source = (ROOT / "serial_monitor/processing/ring_buffer.py").read_text(
+        encoding="utf-8"
+    )
+    plot_source = (
+        ROOT / "serial_monitor/ui/widgets/signal_plot_widget.py"
+    ).read_text(encoding="utf-8")
+
+    assert "self._last_rendered_sequence_id = None" in controller_source
+    assert "reset_stream_baseline=True" in controller_source
+    assert "self.clear_buffers(reset_stream_baseline=True)" in acquisition_source
+    assert "self._time_origin_us" in ring_source
+    assert "view_x_min = x_max - x_window" in plot_source
+    assert 'x_min = max(0.0, data_x_min) if self._current_domain == "time"' in plot_source
+    assert "y_min = min(0.0, data_y_min)" in plot_source

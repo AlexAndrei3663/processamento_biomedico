@@ -17,6 +17,7 @@ class RuntimeSettings:
     recording_queue_capacity: int = 8192
     recording_batch_size: int = 256
     recording_flush_interval_ms: int = 1000
+    conversion_profiles_path: Path = Path("config/conversion_profiles.json")
 
     @property
     def sessions_dir(self) -> Path:
@@ -51,6 +52,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data"),
         help="diretório base para sessões salvas e presets",
+    )
+    parser.add_argument(
+        "--conversion-profiles",
+        type=Path,
+        default=Path("config/conversion_profiles.json"),
+        help="arquivo JSON versionado com perfis de conversão",
     )
     parser.add_argument(
         "--recording-queue-capacity",
@@ -98,4 +105,5 @@ def parse_runtime_settings(argv: Sequence[str] | None = None) -> RuntimeSettings
         recording_queue_capacity=int(namespace.recording_queue_capacity),
         recording_batch_size=int(namespace.recording_batch_size),
         recording_flush_interval_ms=int(namespace.recording_flush_interval_ms),
+        conversion_profiles_path=Path(namespace.conversion_profiles),
     )

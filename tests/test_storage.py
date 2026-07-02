@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from typing import cast
 
 import h5py
 import pytest
@@ -75,7 +76,7 @@ def test_load_window_reads_only_requested_interval_and_decimates(tmp_path):
     assert loaded.loaded_start_us is not None and loaded.loaded_start_us >= 1_200_000
     assert loaded.loaded_end_us is not None and loaded.loaded_end_us <= 1_400_000
     assert loaded.snapshot.channels[0].sample_count == 50
-    assert status.output_path.exists()
+    assert status.output_path is not None and status.output_path.exists()
 
 
 def test_incomplete_session_is_finalized_automatically(tmp_path):
@@ -153,7 +154,8 @@ def test_integrity_verification_detects_modified_dataset(tmp_path):
 
     assert status.output_path is not None
     with h5py.File(status.output_path, "r+") as h5:
-        h5["frames/raw_values"][0, 0] = 999999.0
+        dataset = cast(h5py.Dataset, h5["frames/raw_values"])
+        dataset[0, 0] = 999999.0
         h5.flush()
 
     assert repository.verify_integrity(session_id) == "failed"

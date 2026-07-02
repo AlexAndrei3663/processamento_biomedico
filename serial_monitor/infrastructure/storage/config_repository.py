@@ -29,6 +29,7 @@ class ConfigRepository:
         base_sample_rate_hz: int,
         window_size: int,
         signal_order_text: str,
+        channel_conversions: list[dict] | None = None,
     ) -> SessionPreset:
         normalized_name = self._normalize_name(name)
         if baudrate <= 0:
@@ -51,7 +52,7 @@ class ConfigRepository:
                 created_at = now
 
         payload = {
-            "version": 1,
+            "version": 2,
             "name": normalized_name,
             "created_at": created_at,
             "updated_at": now,
@@ -60,6 +61,15 @@ class ConfigRepository:
             "base_sample_rate_hz": int(base_sample_rate_hz),
             "window_size": int(window_size),
             "signal_order_text": signal_order_text.strip(),
+            "channel_conversions": [
+                {
+                    "channel_index": int(item.get("channel_index", index)),
+                    "enabled": bool(item.get("enabled", False)),
+                    "profile_id": item.get("profile_id"),
+                }
+                for index, item in enumerate(channel_conversions or [])
+                if isinstance(item, dict)
+            ],
         }
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         return self._preset_from_payload(payload, path)
@@ -113,5 +123,10 @@ class ConfigRepository:
             base_sample_rate_hz=int(payload.get("base_sample_rate_hz", 1000)),
             window_size=int(payload.get("window_size", 1000)),
             signal_order_text=str(payload.get("signal_order_text", "")),
+            channel_conversions=[
+                dict(item)
+                for item in payload.get("channel_conversions", [])
+                if isinstance(item, dict)
+            ],
             path=path,
         )

@@ -40,16 +40,30 @@ class LiveAcquisitionService:
     def start(self) -> None:
         if self._session is None:
             raise RuntimeError("Aquisição não configurada.")
+
+        # Cada abertura da serial representa um novo fluxo. O firmware pode
+        # reiniciar sequência e timestamp ao reconectar; por isso a janela e as
+        # referências temporais anteriores não devem ser misturadas ao novo
+        # fluxo. Os contadores de diagnóstico acumulados são preservados.
+        self.clear_buffers(reset_stream_baseline=True)
         self._running = True
 
     def stop(self) -> None:
         self._running = False
 
-    def clear_buffers(self) -> None:
-        """Limpa somente a janela móvel de visualização."""
+    def clear_buffers(self, *, reset_stream_baseline: bool = False) -> None:
+        """Limpa a janela móvel de visualização.
+
+        Quando ``reset_stream_baseline`` é verdadeiro, o próximo quadro passa
+        a ser a nova referência válida de sequência e timestamp. Os contadores
+        de perdas, duplicações e erros já acumulados não são apagados.
+        """
 
         for buffer in self._buffers.values():
             buffer.clear()
+
+        if reset_stream_baseline:
+            self._communication.begin_stream()
 
     def reset(self) -> None:
         """Reinicia buffers e diagnóstico para uma nova aquisição lógica."""

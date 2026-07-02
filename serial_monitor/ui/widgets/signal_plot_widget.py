@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtWidgets import QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from serial_monitor.domain.models import SignalChannelConfig, SpectrumSnapshot
 
@@ -42,10 +42,18 @@ class SignalPlotWidget(QWidget):
         self._last_range_signature: tuple[object, ...] | None = None
         self._current_domain: str | None = None
         self._last_title: str | None = initial_title
+        self._current_y_unit: str | None = None
+
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self.plot_widget = pg.PlotWidget(title=initial_title)
+        self.plot_widget.setMinimumSize(0, 0)
+        self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.plot_widget.showGrid(x=True, y=True, alpha=0.25)
         self.plot_widget.setClipToView(True)
         self.plot_widget.setDownsampling(auto=True, mode="peak")
@@ -75,36 +83,40 @@ class SignalPlotWidget(QWidget):
         self.fixed_x_window = fixed_x_window
         self._last_range_signature = None
 
-    def set_time_axes(self) -> None:
+    def set_time_axes(self, unit: str | None = None) -> None:
         """Configura os eixos para apresentação no domínio do tempo."""
 
-        if self._current_domain == "time":
+        unit = unit or self.channel.unit
+        if self._current_domain == "time" and self._current_y_unit == unit:
             return
 
         self._current_domain = "time"
+        self._current_y_unit = unit
         self._last_range_signature = None
 
         self.plot_widget.setLabel("bottom", "Tempo", units="s")
         self.plot_widget.setLabel(
             "left",
             self.channel.display_name,
-            units=self.channel.unit,
+            units=unit,
         )
 
-    def set_spectrum_axes(self) -> None:
+    def set_spectrum_axes(self, unit: str | None = None) -> None:
         """Configura os eixos para apresentação no domínio da frequência."""
 
-        if self._current_domain == "spectrum":
+        unit = unit or self.channel.unit
+        if self._current_domain == "spectrum" and self._current_y_unit == unit:
             return
 
         self._current_domain = "spectrum"
+        self._current_y_unit = unit
         self._last_range_signature = None
 
         self.plot_widget.setLabel("bottom", "Frequência", units="Hz")
         self.plot_widget.setLabel(
             "left",
             "Magnitude",
-            units=self.channel.unit,
+            units=unit,
         )
 
     def set_time_series(
@@ -112,10 +124,11 @@ class SignalPlotWidget(QWidget):
         x_seconds: np.ndarray,
         values: np.ndarray,
         title_suffix: str = "tempo",
+        unit: str | None = None,
     ) -> None:
         """Exibe uma série no domínio do tempo."""
 
-        self.set_time_axes()
+        self.set_time_axes(unit)
         self._set_title(f"{self.channel.display_name} - {title_suffix}")
 
         if values.size == 0 or x_seconds.size == 0:
@@ -135,10 +148,11 @@ class SignalPlotWidget(QWidget):
         self,
         spectrum: SpectrumSnapshot,
         title_suffix: str = "espectro",
+        unit: str | None = None,
     ) -> None:
         """Exibe o espectro unilateral de magnitude do canal."""
 
-        self.set_spectrum_axes()
+        self.set_spectrum_axes(unit)
         self._set_title(f"{self.channel.display_name} - {title_suffix}")
 
         if spectrum.frequencies_hz.size == 0 or spectrum.magnitudes.size == 0:
@@ -161,10 +175,11 @@ class SignalPlotWidget(QWidget):
         x_seconds: np.ndarray,
         values: np.ndarray,
         title_suffix: str = "tempo",
+        unit: str | None = None,
     ) -> None:
         """Compatibilidade interna com chamadas existentes."""
 
-        self.set_time_series(x_seconds, values, title_suffix)
+        self.set_time_series(x_seconds, values, title_suffix, unit=unit)
 
     def clear(self) -> None:
         """Limpa somente a curva exibida."""
@@ -225,23 +240,40 @@ class SignalPlotWidget(QWidget):
         if finite_x.size == 0 or finite_y.size == 0:
             return
 
-        x_min = float(np.min(finite_x))
-        x_max = float(np.max(finite_x))
-        y_min = float(np.min(finite_y))
-        y_max = float(np.max(finite_y))
+        data_x_min = float(np.min(finite_x))
+        data_x_max = float(np.max(finite_x))
+        data_y_min = float(np.min(finite_y))
+        data_y_max = float(np.max(finite_y))
+
+        # No domínio do tempo, a navegação nunca avança para valores negativos.
+        # O RingBuffer fornece tempo decorrido desde o primeiro timestamp válido
+        # do fluxo, portanto zero é a origem natural do eixo X.
+        x_min = max(0.0, data_x_min) if self._current_domain == "time" else data_x_min
+        x_max = max(x_min, data_x_max)
+
+        # Mantém uma referência visual em zero. Para sinais estritamente
+        # positivos o limite inferior é zero; para sinais que assumem valores
+        # negativos, o menor valor observado passa a ser o limite inferior.
+        y_min = min(0.0, data_y_min)
+        y_max = max(0.0, data_y_max)
 
         x_span = x_max - x_min
         y_span = y_max - y_min
 
         if x_span <= 0:
-            x_min -= 0.5
-            x_max += 0.5
+            if self._current_domain == "time":
+                x_min = 0.0
+                x_max = max(data_x_max, 1.0)
+            else:
+                x_min -= 0.5
+                x_max += 0.5
             x_span = x_max - x_min
 
         if y_span <= 0:
-            padding = max(abs(y_min) * 0.05, 1.0)
-            y_min -= padding
-            y_max += padding
+            # Uma série constante em zero ainda precisa de uma faixa visível.
+            # O limite inferior continua travado em zero.
+            y_min = min(0.0, data_y_min)
+            y_max = max(1.0, data_y_max)
             y_span = y_max - y_min
 
         if self.fixed_x_window is None:
@@ -271,21 +303,10 @@ class SignalPlotWidget(QWidget):
 
         view_box = self.plot_widget.getViewBox()
 
-        current_x_range = view_box.viewRange()[0]
-        current_x_min = float(current_x_range[0])
-        current_x_max = float(current_x_range[1])
-        current_x_span = current_x_max - current_x_min
-
-        should_keep_current_position = (
-            current_x_span > 0
-            and abs(current_x_span - x_window)
-            <= max(x_window * 0.001, 1e-9)
-        )
-
-        if should_keep_current_position:
-            view_x_min = current_x_min
-        else:
-            view_x_min = x_max - x_window
+        # A janela acompanha sempre o timestamp mais recente. Quando o buffer
+        # circular começa a sobrescrever amostras antigas, o eixo X continua
+        # avançando em vez de retornar a zero ou permanecer em uma faixa antiga.
+        view_x_min = x_max - x_window
 
         view_x_min = max(
             x_min,

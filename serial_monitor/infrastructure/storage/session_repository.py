@@ -11,11 +11,13 @@ import h5py
 import numpy as np
 
 from serial_monitor import PROTOCOL_VERSION, SOFTWARE_VERSION
-from serial_monitor.domain.enums import ProtocolMode, SignalType
+from serial_monitor.domain.enums import ConversionModel, ProtocolMode, SignalType
 from serial_monitor.domain.models import (
     AcquisitionSnapshot,
     ChannelBufferSnapshot,
     CommunicationStats,
+    ConversionConfig,
+    ConversionProfile,
     SequenceDiagnostics,
     SessionConfig,
     SessionRecoveryResult,
@@ -37,7 +39,7 @@ class SessionRepository:
     DATA_SUFFIX = ".h5"
     PARTIAL_SUFFIX = ".partial.h5"
     FORMAT_VERSION = Hdf5SessionWriter.FORMAT_VERSION
-    SUPPORTED_FORMAT_VERSIONS = {4, 5}
+    SUPPORTED_FORMAT_VERSIONS = {4, 5, 6}
 
     def __init__(self, base_dir: str | Path = "data/sessions") -> None:
         self.base_dir = Path(base_dir)
@@ -161,8 +163,10 @@ class SessionRepository:
 
                 header = ["sample_index", "sequence_id", "timestamp_us"]
                 for channel in session.channels:
-                    unit = channel.unit.replace(" ", "_") or "value"
-                    header.append(f"ch{channel.index}_{channel.signal_type.value}_{unit}")
+                    unit = channel.raw_unit.replace(" ", "_") or "value"
+                    header.append(
+                        f"ch{channel.index}_{channel.signal_type.value}_raw_{unit}"
+                    )
 
                 writer = csv.writer(fp)
                 writer.writerow(header)
@@ -497,15 +501,37 @@ class SessionRepository:
     def _session_from_file(self, h5: h5py.File) -> SessionConfig:
         channels = []
         for source in self._channels_metadata(h5):
+            conversion_source = source.get("conversion", {})
+            if not isinstance(conversion_source, dict):
+                conversion_source = {}
+            enabled = bool(conversion_source.get("enabled", False))
+            profile_id_raw = conversion_source.get("profile_id")
+            profile_id = str(profile_id_raw) if profile_id_raw else None
+            profile_source = source.get("conversion_profile_snapshot")
+            profile = (
+                self._conversion_profile_from_dict(profile_source)
+                if isinstance(profile_source, dict)
+                else None
+            )
+
+            # Versões anteriores não continham conversão reproduzível.
+            if int(h5.attrs.get("format_version", 0)) < 6:
+                enabled = False
+                profile_id = None
+                profile = None
+
+            raw_unit = str(source.get("raw_unit", source.get("unit", "count")))
+            unit = str(source.get("unit", raw_unit)) if enabled else raw_unit
             channels.append(
                 SignalChannelConfig(
                     index=int(source["index"]),
                     signal_type=SignalType.from_text(str(source["signal_type"])),
                     display_name=str(source["display_name"]),
-                    unit=str(source["unit"]),
+                    unit=unit,
+                    raw_unit=raw_unit,
                     sample_rate_hz=float(source["sample_rate_hz"]),
-                    scale=float(source.get("scale", 1.0)),
-                    offset=float(source.get("offset", 0.0)),
+                    conversion=ConversionConfig(enabled=enabled, profile_id=profile_id),
+                    conversion_profile=profile,
                     default_filters=list(source.get("default_filters", [])),
                 )
             )
@@ -520,6 +546,36 @@ class SessionRepository:
             ),
             channels=channels,
         )
+
+    @staticmethod
+    def _conversion_profile_from_dict(source: dict) -> ConversionProfile:
+        signal_value = str(source.get("signal_type", "*"))
+        signal_type = None if signal_value in {"", "*", "any"} else SignalType.from_text(signal_value)
+
+        def optional_range(name: str) -> tuple[float, float] | None:
+            value = source.get(name)
+            if not isinstance(value, list) or len(value) != 2:
+                return None
+            return float(value[0]), float(value[1])
+
+        profile = ConversionProfile(
+            profile_id=str(source["profile_id"]),
+            version=int(source.get("version", 1)),
+            signal_type=signal_type,
+            model=ConversionModel(str(source.get("model", "identity"))),
+            input_unit=str(source.get("input_unit", "count")),
+            output_unit=str(source.get("output_unit", "a.u.")),
+            parameters=dict(source.get("parameters", {})),
+            description=str(source.get("description", "")),
+            valid_input_range=optional_range("valid_input_range"),
+            valid_output_range=optional_range("valid_output_range"),
+            origin=str(source.get("origin", "")),
+            created_at=str(source.get("created_at", "")),
+            reference_equipment=str(source.get("reference_equipment", "")),
+            estimated_uncertainty=str(source.get("estimated_uncertainty", "")),
+        )
+        profile.validate()
+        return profile
 
     @staticmethod
     def _channels_metadata(h5: h5py.File) -> list[dict]:

@@ -28,6 +28,13 @@ class SignalType(str, Enum):
         return aliases.get(normalized, cls(normalized))
 
 
+class ConversionModel(str, Enum):
+    IDENTITY = "identity"
+    LINEAR = "linear"
+    POLYNOMIAL = "polynomial"
+    LOOKUP_TABLE = "lookup_table"
+
+
 class ProtocolMode(str, Enum):
     FRAME_CSV = "frame_csv"
 

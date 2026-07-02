@@ -5,6 +5,7 @@ from typing import Dict, Iterable, List, Set
 import numpy as np
 from scipy import signal
 
+from serial_monitor.application.conversion_service import ConversionService
 from serial_monitor.domain.enums import SignalType
 from serial_monitor.domain.models import (
     AcquisitionSnapshot,
@@ -270,10 +271,15 @@ def calculate_metrics(values: np.ndarray) -> MetricSnapshot:
 class ProcessingService:
     """Mantém o estado de filtros ativos e gera snapshots processados."""
 
-    def __init__(self, pipeline: FilterPipeline | None = None) -> None:
+    def __init__(
+        self,
+        pipeline: FilterPipeline | None = None,
+        conversion_service: ConversionService | None = None,
+    ) -> None:
         self._session: SessionConfig | None = None
         self._enabled_filters: Dict[int, Set[str]] = {}
         self.pipeline = pipeline or FilterPipeline()
+        self.conversion_service = conversion_service or ConversionService()
 
     def configure(self, session: SessionConfig) -> None:
         self._session = session
@@ -330,13 +336,29 @@ class ProcessingService:
 
         for index, channel_snapshot in snapshot.channels.items():
             active_filters = self.active_filters_for(index)
-            processed_values, status = self._process_channel(channel_snapshot, active_filters)
-            last_processed_value = None
-            if processed_values.size:
-                last_processed_value = float(processed_values[-1])
+            conversion = self.conversion_service.convert(
+                channel_snapshot.values,
+                channel_snapshot.channel,
+            )
+            processed_values, filter_status = self._process_channel_values(
+                conversion.values,
+                channel_snapshot.channel,
+                active_filters,
+            )
+
+            last_converted_value = (
+                float(conversion.values[-1]) if conversion.values.size else None
+            )
+            last_processed_value = (
+                float(processed_values[-1]) if processed_values.size else None
+            )
 
             raw_spectrum = calculate_single_sided_spectrum(
                 channel_snapshot.values,
+                channel_snapshot.channel.sample_rate_hz,
+            )
+            converted_spectrum = calculate_single_sided_spectrum(
+                conversion.values,
                 channel_snapshot.channel.sample_rate_hz,
             )
             processed_spectrum = calculate_single_sided_spectrum(
@@ -349,16 +371,26 @@ class ProcessingService:
                 sample_count=channel_snapshot.sample_count,
                 x_seconds=channel_snapshot.x_seconds,
                 raw_values=channel_snapshot.values,
+                converted_values=conversion.values,
                 processed_values=processed_values,
                 timestamps_us=channel_snapshot.timestamps_us,
                 sequence_ids=channel_snapshot.sequence_ids,
                 last_raw_value=channel_snapshot.last_value,
+                last_converted_value=last_converted_value,
                 last_processed_value=last_processed_value,
                 last_timestamp_us=channel_snapshot.last_timestamp_us,
+                conversion_enabled=conversion.enabled,
+                conversion_profile_id=conversion.profile_id,
+                conversion_status=list(conversion.status),
+                conversion_input_unit=conversion.input_unit,
+                conversion_output_unit=conversion.output_unit,
+                conversion_out_of_input_range=conversion.out_of_input_range,
+                conversion_out_of_output_range=conversion.out_of_output_range,
                 active_filters=active_filters,
-                filter_status=status,
+                filter_status=filter_status,
                 metrics=calculate_metrics(processed_values),
                 raw_spectrum=raw_spectrum,
+                converted_spectrum=converted_spectrum,
                 processed_spectrum=processed_spectrum,
             )
 
@@ -371,14 +403,16 @@ class ProcessingService:
             channels=processed_channels,
         )
 
-    def _process_channel(
+    def _process_channel_values(
         self,
-        snapshot: ChannelBufferSnapshot,
+        values: np.ndarray,
+        channel: SignalChannelConfig,
         active_filters: List[str],
     ) -> tuple[np.ndarray, List[str]]:
-        raw = _as_float_array(snapshot.values)
+        source = _as_float_array(values)
         if not active_filters:
-            return raw.copy(), ["Sem filtros ativos."]
-        if raw.size == 0:
-            return raw.copy(), ["Sem amostras para processar."]
-        return self.pipeline.apply(raw, snapshot.channel, active_filters)
+            return source.copy(), ["Sem filtros ativos."]
+        if source.size == 0:
+            return source.copy(), ["Sem amostras para processar."]
+        return self.pipeline.apply(source, channel, active_filters)
+

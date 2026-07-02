@@ -6,7 +6,83 @@ from typing import Callable, Dict, List
 
 import numpy as np
 
-from .enums import ProtocolMode, RecordingState, SignalType
+from .enums import ConversionModel, ProtocolMode, RecordingState, SignalType
+
+
+@dataclass(frozen=True, slots=True)
+class ConversionConfig:
+    enabled: bool = False
+    profile_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.enabled and not self.profile_id:
+            raise ValueError("Conversão habilitada exige um profile_id.")
+
+
+@dataclass(frozen=True, slots=True)
+class ConversionProfile:
+    profile_id: str
+    version: int
+    signal_type: SignalType | None
+    model: ConversionModel
+    input_unit: str
+    output_unit: str
+    parameters: Dict[str, object]
+    description: str = ""
+    valid_input_range: tuple[float, float] | None = None
+    valid_output_range: tuple[float, float] | None = None
+    origin: str = ""
+    created_at: str = ""
+    reference_equipment: str = ""
+    estimated_uncertainty: str = ""
+
+    def validate(self) -> None:
+        if not self.profile_id.strip():
+            raise ValueError("O identificador do perfil de conversão não pode ser vazio.")
+        if self.version <= 0:
+            raise ValueError(f"Versão inválida no perfil '{self.profile_id}'.")
+        if not self.input_unit.strip() or not self.output_unit.strip():
+            raise ValueError(f"Perfil '{self.profile_id}' deve definir unidades de entrada e saída.")
+        if self.model == ConversionModel.LINEAR:
+            for name in ("scale", "offset"):
+                if name not in self.parameters:
+                    raise ValueError(f"Perfil linear '{self.profile_id}' não possui '{name}'.")
+        elif self.model == ConversionModel.POLYNOMIAL:
+            coefficients = self.parameters.get("coefficients")
+            if not isinstance(coefficients, list) or not coefficients:
+                raise ValueError(
+                    f"Perfil polinomial '{self.profile_id}' exige 'coefficients'."
+                )
+        elif self.model == ConversionModel.LOOKUP_TABLE:
+            x_values = self.parameters.get("input")
+            y_values = self.parameters.get("output")
+            if (
+                not isinstance(x_values, list)
+                or not isinstance(y_values, list)
+                or len(x_values) != len(y_values)
+                or len(x_values) < 2
+            ):
+                raise ValueError(
+                    f"Perfil por tabela '{self.profile_id}' exige listas 'input' e 'output' compatíveis."
+                )
+
+    def to_dict(self) -> dict:
+        return {
+            "profile_id": self.profile_id,
+            "version": self.version,
+            "signal_type": self.signal_type.value if self.signal_type is not None else "*",
+            "model": self.model.value,
+            "input_unit": self.input_unit,
+            "output_unit": self.output_unit,
+            "parameters": dict(self.parameters),
+            "description": self.description,
+            "valid_input_range": list(self.valid_input_range) if self.valid_input_range else None,
+            "valid_output_range": list(self.valid_output_range) if self.valid_output_range else None,
+            "origin": self.origin,
+            "created_at": self.created_at,
+            "reference_equipment": self.reference_equipment,
+            "estimated_uncertainty": self.estimated_uncertainty,
+        }
 
 
 @dataclass(slots=True)
@@ -16,13 +92,46 @@ class SignalChannelConfig:
     display_name: str
     unit: str
     sample_rate_hz: float
-    scale: float = 1.0
-    offset: float = 0.0
+    raw_unit: str = "count"
+    conversion: ConversionConfig = field(default_factory=ConversionConfig)
+    conversion_profile: ConversionProfile | None = None
     default_filters: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.sample_rate_hz <= 0:
+            raise ValueError("A taxa do canal deve ser maior que zero.")
+        if self.conversion.enabled:
+            if self.conversion_profile is None:
+                raise ValueError(
+                    f"Canal ch{self.index}: conversão habilitada sem perfil resolvido."
+                )
+            if self.conversion.profile_id != self.conversion_profile.profile_id:
+                raise ValueError(
+                    f"Canal ch{self.index}: configuração e snapshot de conversão divergentes."
+                )
+            if (
+                self.conversion_profile.signal_type is not None
+                and self.conversion_profile.signal_type != self.signal_type
+            ):
+                raise ValueError(
+                    f"Canal ch{self.index}: perfil incompatível com {self.signal_type.value}."
+                )
+            if self.unit != self.conversion_profile.output_unit:
+                raise ValueError(
+                    f"Canal ch{self.index}: unidade de exibição diverge do perfil."
+                )
+        elif self.conversion_profile is not None:
+            raise ValueError(
+                f"Canal ch{self.index}: perfil informado com conversão desabilitada."
+            )
 
     @property
     def channel_id(self) -> str:
         return f"ch{self.index}_{self.signal_type.value}"
+
+    @property
+    def conversion_enabled(self) -> bool:
+        return self.conversion.enabled
 
 
 @dataclass(slots=True)
@@ -168,16 +277,26 @@ class ProcessedChannelSnapshot:
     sample_count: int
     x_seconds: np.ndarray
     raw_values: np.ndarray
+    converted_values: np.ndarray
     processed_values: np.ndarray
     timestamps_us: np.ndarray
     sequence_ids: np.ndarray
     last_raw_value: float | None
+    last_converted_value: float | None
     last_processed_value: float | None
     last_timestamp_us: int | None
+    conversion_enabled: bool
+    conversion_profile_id: str | None
+    conversion_status: List[str]
+    conversion_input_unit: str
+    conversion_output_unit: str
+    conversion_out_of_input_range: int
+    conversion_out_of_output_range: int
     active_filters: List[str]
     filter_status: List[str]
     metrics: MetricSnapshot
     raw_spectrum: SpectrumSnapshot
+    converted_spectrum: SpectrumSnapshot
     processed_spectrum: SpectrumSnapshot
 
 
@@ -294,7 +413,8 @@ class SessionPreset:
     base_sample_rate_hz: int
     window_size: int
     signal_order_text: str
-    path: Path
+    channel_conversions: List[dict] = field(default_factory=list)
+    path: Path = Path()
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,3 +427,4 @@ class SignalPreset:
     display_name: str
     unit: str
     default_filters: List[str]
+    raw_unit: str = "count"

@@ -5,8 +5,8 @@ from typing import Iterable
 import serial.tools.list_ports
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
 
 from serial_monitor.app.signals_catalog import SIGNAL_PRESETS
 from serial_monitor.domain.enums import SignalType
-from serial_monitor.domain.models import ProcessedAcquisitionSnapshot
+from serial_monitor.domain.models import ConversionProfile, ProcessedAcquisitionSnapshot
 from serial_monitor.infrastructure.storage.config_repository import SessionPreset
 
 
@@ -70,20 +70,12 @@ class ConfigPage(QWidget):
         "Preset 8",
     )
 
-    DEFAULT_TEST_VALUES = {
-        SignalType.ECG: 0.52,
-        SignalType.PPG: 0.81,
-        SignalType.OXIMETRIA: 97.0,
-        SignalType.TEMPERATURA: 36.5,
-        SignalType.RESPIRACAO: 0.2,
-        SignalType.EMG: 0.1,
-        SignalType.EEG: 0.05,
-        SignalType.OUTRO: 0.0,
-    }
 
     def __init__(self) -> None:
         super().__init__()
-        self._test_value_spinboxes: list[QDoubleSpinBox] = []
+        self._conversion_profiles: list[ConversionProfile] = []
+        self._channel_conversion_configs: list[dict] = []
+        self._updating_conversion_editor = False
 
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -107,8 +99,8 @@ class ConfigPage(QWidget):
         self._build_acquisition_group(root)
         self._build_display_update_group(root)
         self._build_channels_group(root)
+        self._build_conversion_group(root)
         self._build_preset_group(root)
-        self._build_protocol_test_group(root)
         self._build_buffer_summary_group(root)
         self._build_log_group(root)
 
@@ -118,19 +110,19 @@ class ConfigPage(QWidget):
         self.move_channel_up_button.clicked.connect(lambda: self._move_selected_channel(-1))
         self.move_channel_down_button.clicked.connect(lambda: self._move_selected_channel(1))
         self.clear_channels_button.clicked.connect(self.clear_channels)
-        self.next_test_frame_button.clicked.connect(self.advance_test_frame)
-        self.sample_rate_selector.currentIndexChanged.connect(self._update_timestamp_step)
         self.apply_update_interval_button.clicked.connect(
-            lambda: self.update_interval_changed.emit(
-                self.update_interval_spinbox.value()
-            )
+            lambda: self.update_interval_changed.emit(self.update_interval_spinbox.value())
+        )
+        self.channel_order_list.currentRowChanged.connect(self._sync_conversion_editor)
+        self.conversion_enabled_checkbox.toggled.connect(self._on_conversion_enabled_changed)
+        self.conversion_profile_selector.currentIndexChanged.connect(
+            self._on_conversion_profile_changed
         )
 
         self.refresh_ports()
         self.set_channel_order(
             [SignalType.ECG, SignalType.PPG, SignalType.OXIMETRIA]
         )
-        self._update_timestamp_step()
 
     def _build_acquisition_group(self, root: QVBoxLayout) -> None:
         session_group = QGroupBox("Parâmetros da aquisição")
@@ -192,11 +184,9 @@ class ConfigPage(QWidget):
         self.apply_update_interval_button = QPushButton(
             "Aplicar intervalo de atualização"
         )
-
         self.performance_hint_label = QLabel(
-            "Intervalos maiores reduzem o uso de CPU na Raspberry Pi. "
-            "O valor altera somente a renderização da interface, sem afetar "
-            "a aquisição ou a gravação."
+            "Intervalos maiores reduzem o uso de CPU. A alteração afeta apenas "
+            "a renderização, sem modificar a aquisição nem a gravação."
         )
         self.performance_hint_label.setWordWrap(True)
 
@@ -206,7 +196,6 @@ class ConfigPage(QWidget):
         )
         performance_layout.addRow(self.apply_update_interval_button)
         performance_layout.addRow(self.performance_hint_label)
-
         root.addWidget(performance_group)
 
     def set_performance_settings(
@@ -217,11 +206,9 @@ class ConfigPage(QWidget):
         self.update_interval_spinbox.setValue(
             max(50, min(2000, int(update_interval_ms)))
         )
-
         self.performance_hint_label.setText(
-            "Intervalos maiores reduzem o uso de CPU na Raspberry Pi. "
-            "O valor altera somente a renderização da interface, sem afetar "
-            "a aquisição ou a gravação. "
+            "Intervalos maiores reduzem o uso de CPU. A alteração afeta somente "
+            "a renderização, sem modificar aquisição ou gravação. "
             f"Máximo atual: {int(max_plot_points)} pontos por curva."
         )
 
@@ -265,6 +252,154 @@ class ConfigPage(QWidget):
         channels_layout.addLayout(channel_buttons)
         root.addWidget(channels_group)
 
+    def _build_conversion_group(self, root: QVBoxLayout) -> None:
+        conversion_group = QGroupBox("Conversão de unidades por canal")
+        conversion_layout = QVBoxLayout(conversion_group)
+
+        helper = QLabel(
+            "A conversão começa desabilitada. Selecione um canal na lista acima, "
+            "ative a conversão e escolha um perfil compatível. O valor bruto sempre "
+            "será preservado no arquivo da sessão."
+        )
+        helper.setWordWrap(True)
+        conversion_layout.addWidget(helper)
+
+        form = QFormLayout()
+        self.conversion_channel_label = QLabel("Nenhum canal selecionado")
+        self.conversion_enabled_checkbox = QCheckBox("Habilitar conversão neste canal")
+        self.conversion_profile_selector = QComboBox()
+        self.conversion_profile_selector.setEnabled(False)
+        self.conversion_details_label = QLabel("Conversão desabilitada.")
+        self.conversion_details_label.setWordWrap(True)
+
+        form.addRow("Canal", self.conversion_channel_label)
+        form.addRow(self.conversion_enabled_checkbox)
+        form.addRow("Perfil", self.conversion_profile_selector)
+        form.addRow("Detalhes", self.conversion_details_label)
+        conversion_layout.addLayout(form)
+        root.addWidget(conversion_group)
+
+    @property
+    def channel_conversion_configs(self) -> list[dict]:
+        return [dict(item) for item in self._channel_conversion_configs]
+
+    def set_conversion_profiles(self, profiles: list[ConversionProfile]) -> None:
+        self._conversion_profiles = list(profiles)
+        self._sync_conversion_editor(self.channel_order_list.currentRow())
+
+    def _sync_conversion_editor(self, row: int) -> None:
+        self._updating_conversion_editor = True
+        try:
+            valid = 0 <= row < self.channel_order_list.count()
+            self.conversion_enabled_checkbox.setEnabled(valid)
+            if not valid:
+                self.conversion_channel_label.setText("Nenhum canal selecionado")
+                self.conversion_enabled_checkbox.setChecked(False)
+                self.conversion_profile_selector.clear()
+                self.conversion_profile_selector.setEnabled(False)
+                self.conversion_details_label.setText("Conversão desabilitada.")
+                return
+
+            signal_type = self._signal_type_at(row)
+            preset = SIGNAL_PRESETS[signal_type]
+            config = self._channel_conversion_configs[row]
+            self.conversion_channel_label.setText(
+                f"ch{row} — {preset.display_name} | entrada bruta: {preset.raw_unit}"
+            )
+
+            compatible = [
+                profile
+                for profile in self._conversion_profiles
+                if (profile.signal_type is None or profile.signal_type == signal_type)
+                and profile.input_unit == preset.raw_unit
+            ]
+            self.conversion_profile_selector.clear()
+            for profile in compatible:
+                self.conversion_profile_selector.addItem(
+                    f"{profile.profile_id} → {profile.output_unit}",
+                    profile.profile_id,
+                )
+
+            enabled = bool(config.get("enabled", False))
+            profile_id = config.get("profile_id")
+            self.conversion_enabled_checkbox.setChecked(enabled)
+            if profile_id:
+                index = self.conversion_profile_selector.findData(profile_id)
+                self.conversion_profile_selector.setCurrentIndex(index)
+            self.conversion_profile_selector.setEnabled(
+                enabled and self.conversion_profile_selector.count() > 0
+            )
+            self._refresh_conversion_details()
+        finally:
+            self._updating_conversion_editor = False
+
+    def _on_conversion_enabled_changed(self, enabled: bool) -> None:
+        if self._updating_conversion_editor:
+            return
+        row = self.channel_order_list.currentRow()
+        if not 0 <= row < len(self._channel_conversion_configs):
+            return
+        profile_id = self.conversion_profile_selector.currentData()
+        self._channel_conversion_configs[row] = {
+            "channel_index": row,
+            "enabled": bool(enabled),
+            "profile_id": str(profile_id) if enabled and profile_id else None,
+        }
+        self.conversion_profile_selector.setEnabled(
+            enabled and self.conversion_profile_selector.count() > 0
+        )
+        self._update_channel_item_label(row)
+        self._refresh_conversion_details()
+
+    def _on_conversion_profile_changed(self, _index: int) -> None:
+        if self._updating_conversion_editor:
+            return
+        row = self.channel_order_list.currentRow()
+        if not 0 <= row < len(self._channel_conversion_configs):
+            return
+        enabled = self.conversion_enabled_checkbox.isChecked()
+        profile_id = self.conversion_profile_selector.currentData()
+        self._channel_conversion_configs[row] = {
+            "channel_index": row,
+            "enabled": enabled,
+            "profile_id": str(profile_id) if enabled and profile_id else None,
+        }
+        self._update_channel_item_label(row)
+        self._refresh_conversion_details()
+
+    def _refresh_conversion_details(self) -> None:
+        row = self.channel_order_list.currentRow()
+        if not 0 <= row < len(self._channel_conversion_configs):
+            self.conversion_details_label.setText("Conversão desabilitada.")
+            return
+        config = self._channel_conversion_configs[row]
+        if not config.get("enabled"):
+            self.conversion_details_label.setText(
+                "Conversão desabilitada: o valor recebido será exibido e armazenado "
+                "sem alteração."
+            )
+            return
+        profile_id = config.get("profile_id")
+        profile = next(
+            (item for item in self._conversion_profiles if item.profile_id == profile_id),
+            None,
+        )
+        if profile is None:
+            self.conversion_details_label.setText(
+                "Selecione um perfil compatível antes de validar a sessão."
+            )
+            return
+        self.conversion_details_label.setText(
+            f"Modelo: {profile.model.value} | {profile.input_unit} → "
+            f"{profile.output_unit} | {profile.description}"
+        )
+
+    def _signal_type_at(self, row: int) -> SignalType:
+        item = self.channel_order_list.item(row)
+        if item is None:
+            return SignalType.from_text("")
+        return SignalType.from_text(str(item.data(self.SIGNAL_TYPE_ROLE)))
+
     def _build_preset_group(self, root: QVBoxLayout) -> None:
         presets_group = QGroupBox("Presets de configuração")
         presets_layout = QVBoxLayout(presets_group)
@@ -292,49 +427,13 @@ class ConfigPage(QWidget):
         presets_layout.addLayout(presets_buttons)
         root.addWidget(presets_group)
 
-    def _build_protocol_test_group(self, root: QVBoxLayout) -> None:
-        protocol_group = QGroupBox("Teste do protocolo sem teclado")
-        protocol_layout = QVBoxLayout(protocol_group)
-
-        frame_form = QFormLayout()
-        self.test_sequence_input = QSpinBox()
-        self.test_sequence_input.setRange(0, 2_147_483_647)
-        self.test_sequence_input.setValue(1)
-        self.test_sequence_input.setAccelerated(True)
-
-        self.test_timestamp_input = QDoubleSpinBox()
-        self.test_timestamp_input.setDecimals(0)
-        self.test_timestamp_input.setRange(0, 9_000_000_000_000_000)
-        self.test_timestamp_input.setValue(1_000_000)
-        self.test_timestamp_input.setSuffix(" µs")
-        self.test_timestamp_input.setAccelerated(True)
-
-        frame_form.addRow("Sequência", self.test_sequence_input)
-        frame_form.addRow("Timestamp", self.test_timestamp_input)
-        protocol_layout.addLayout(frame_form)
-
-        self.test_values_group = QGroupBox("Valores do frame")
-        self.test_values_form = QFormLayout(self.test_values_group)
-        protocol_layout.addWidget(self.test_values_group)
-
-        protocol_buttons = QHBoxLayout()
-        self.validate_frame_button = QPushButton("Testar parser")
-        self.ingest_frame_button = QPushButton("Inserir no buffer")
-        self.next_test_frame_button = QPushButton("Próximo frame")
-        self.clear_buffers_button = QPushButton("Limpar buffers")
-        protocol_buttons.addWidget(self.validate_frame_button)
-        protocol_buttons.addWidget(self.ingest_frame_button)
-        protocol_buttons.addWidget(self.next_test_frame_button)
-        protocol_buttons.addWidget(self.clear_buffers_button)
-        protocol_layout.addLayout(protocol_buttons)
-        root.addWidget(protocol_group)
 
     def _build_buffer_summary_group(self, root: QVBoxLayout) -> None:
         summary_group = QGroupBox("Resumo dos buffers e da comunicação")
         summary_layout = QVBoxLayout(summary_group)
         self.buffer_summary = QPlainTextEdit()
         self.buffer_summary.setReadOnly(True)
-        self.buffer_summary.setMinimumHeight(180)
+        self.buffer_summary.setMinimumHeight(300)
         self.buffer_summary.setPlainText("Aquisição ainda não configurada.")
         summary_layout.addWidget(self.buffer_summary)
         root.addWidget(summary_group)
@@ -388,18 +487,11 @@ class ConfigPage(QWidget):
         values: list[str] = []
         for row in range(self.channel_order_list.count()):
             item = self.channel_order_list.item(row)
-            value = item.data(self.SIGNAL_TYPE_ROLE)
+            value = item.data(self.SIGNAL_TYPE_ROLE) if item is not None else None
             if value:
                 values.append(str(value))
         return ",".join(values)
 
-    @property
-    def sample_frame_text(self) -> str:
-        sequence_id = self.test_sequence_input.value()
-        timestamp_us = int(round(self.test_timestamp_input.value()))
-        values = [spin.value() for spin in self._test_value_spinboxes]
-        payload = ",".join(self._format_number(value) for value in values)
-        return f"FRAME,{sequence_id},{timestamp_us},{payload}"
 
     def refresh_ports(self) -> None:
         ports = list(serial.tools.list_ports.comports())
@@ -451,7 +543,7 @@ class ConfigPage(QWidget):
             for item in preset.signal_order_text.split(",")
             if item.strip()
         ]
-        self.set_channel_order(signal_types)
+        self.set_channel_order(signal_types, preset.channel_conversions)
 
     def add_selected_channel(self) -> None:
         value = self.available_signal_selector.currentData()
@@ -463,31 +555,58 @@ class ConfigPage(QWidget):
         item = QListWidgetItem()
         item.setData(self.SIGNAL_TYPE_ROLE, signal_type.value)
         self.channel_order_list.addItem(item)
-        self._refresh_channel_labels_and_test_values()
+        self._channel_conversion_configs.append(
+            {
+                "channel_index": self.channel_order_list.count() - 1,
+                "enabled": False,
+                "profile_id": None,
+            }
+        )
+        self._refresh_channel_labels()
         self.channel_order_list.setCurrentRow(self.channel_order_list.count() - 1)
 
-    def set_channel_order(self, signal_types: Iterable[SignalType]) -> None:
+    def set_channel_order(
+        self,
+        signal_types: Iterable[SignalType],
+        conversion_configs: list[dict] | None = None,
+    ) -> None:
         self.channel_order_list.clear()
-        for signal_type in signal_types:
+        self._channel_conversion_configs = []
+        source_configs = list(conversion_configs or [])
+        for index, signal_type in enumerate(signal_types):
             item = QListWidgetItem()
             item.setData(self.SIGNAL_TYPE_ROLE, signal_type.value)
             self.channel_order_list.addItem(item)
-        self._refresh_channel_labels_and_test_values()
+            source = source_configs[index] if index < len(source_configs) else {}
+            self._channel_conversion_configs.append(
+                {
+                    "channel_index": index,
+                    "enabled": bool(source.get("enabled", False)),
+                    "profile_id": source.get("profile_id"),
+                }
+            )
+        self._refresh_channel_labels()
         if self.channel_order_list.count() > 0:
             self.channel_order_list.setCurrentRow(0)
+        else:
+            self._sync_conversion_editor(-1)
 
     def remove_selected_channel(self) -> None:
         row = self.channel_order_list.currentRow()
         if row < 0:
             return
         self.channel_order_list.takeItem(row)
-        self._refresh_channel_labels_and_test_values()
+        if row < len(self._channel_conversion_configs):
+            self._channel_conversion_configs.pop(row)
+        self._refresh_channel_labels()
         if self.channel_order_list.count() > 0:
             self.channel_order_list.setCurrentRow(min(row, self.channel_order_list.count() - 1))
 
     def clear_channels(self) -> None:
         self.channel_order_list.clear()
-        self._refresh_channel_labels_and_test_values()
+        self._channel_conversion_configs.clear()
+        self._refresh_channel_labels()
+        self._sync_conversion_editor(-1)
 
     def _move_selected_channel(self, offset: int) -> None:
         current = self.channel_order_list.currentRow()
@@ -496,46 +615,40 @@ class ConfigPage(QWidget):
             return
         item = self.channel_order_list.takeItem(current)
         self.channel_order_list.insertItem(target, item)
+        conversion = self._channel_conversion_configs.pop(current)
+        self._channel_conversion_configs.insert(target, conversion)
         self.channel_order_list.setCurrentRow(target)
-        self._refresh_channel_labels_and_test_values()
+        self._refresh_channel_labels()
 
-    def _refresh_channel_labels_and_test_values(self) -> None:
-        signal_types: list[SignalType] = []
+    def _refresh_channel_labels(self) -> None:
         for row in range(self.channel_order_list.count()):
-            item = self.channel_order_list.item(row)
-            signal_type = SignalType.from_text(str(item.data(self.SIGNAL_TYPE_ROLE)))
-            preset = SIGNAL_PRESETS[signal_type]
-            item.setText(f"ch{row} — {preset.display_name} ({signal_type.value})")
-            signal_types.append(signal_type)
-        self._rebuild_test_value_controls(signal_types)
+            conversion = (
+                self._channel_conversion_configs[row]
+                if row < len(self._channel_conversion_configs)
+                else {"enabled": False, "profile_id": None}
+            )
+            conversion["channel_index"] = row
+            self._update_channel_item_label(row)
+        self._sync_conversion_editor(self.channel_order_list.currentRow())
 
-    def _rebuild_test_value_controls(self, signal_types: list[SignalType]) -> None:
-        while self.test_values_form.rowCount() > 0:
-            self.test_values_form.removeRow(0)
-        self._test_value_spinboxes.clear()
+    def _update_channel_item_label(self, row: int) -> None:
+        if not 0 <= row < self.channel_order_list.count():
+            return
+        item = self.channel_order_list.item(row)
+        if item is None:
+            return
+        signal_type = SignalType.from_text(str(item.data(self.SIGNAL_TYPE_ROLE)))
+        preset = SIGNAL_PRESETS[signal_type]
+        conversion = (
+            self._channel_conversion_configs[row]
+            if row < len(self._channel_conversion_configs)
+            else {"enabled": False}
+        )
+        marker = " | conversão ativa" if conversion.get("enabled") else ""
+        item.setText(
+            f"ch{row} — {preset.display_name} ({signal_type.value}){marker}"
+        )
 
-        for index, signal_type in enumerate(signal_types):
-            preset = SIGNAL_PRESETS[signal_type]
-            spin = QDoubleSpinBox()
-            spin.setDecimals(6)
-            spin.setRange(-100_000_000.0, 100_000_000.0)
-            spin.setSingleStep(0.1)
-            spin.setValue(self.DEFAULT_TEST_VALUES[signal_type])
-            spin.setAccelerated(True)
-            if preset.unit:
-                spin.setSuffix(f" {preset.unit}")
-            self.test_values_form.addRow(f"ch{index} — {preset.display_name}", spin)
-            self._test_value_spinboxes.append(spin)
-
-    def advance_test_frame(self) -> None:
-        self.test_sequence_input.setValue(self.test_sequence_input.value() + 1)
-        sample_rate = max(1, self.sample_rate_hz)
-        increment_us = max(1, int(round(1_000_000 / sample_rate)))
-        self.test_timestamp_input.setValue(self.test_timestamp_input.value() + increment_us)
-
-    def _update_timestamp_step(self) -> None:
-        sample_rate = max(1, self.sample_rate_hz)
-        self.test_timestamp_input.setSingleStep(max(1, int(round(1_000_000 / sample_rate))))
 
     def update_buffer_summary(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
         if not snapshot.configured:

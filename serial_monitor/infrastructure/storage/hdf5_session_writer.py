@@ -18,8 +18,8 @@ from serial_monitor.infrastructure.storage.hdf5_integrity import update_content_
 class Hdf5SessionWriter:
     """Escritor incremental de uma sessão sincronizada multicanal."""
 
-    FORMAT_VERSION = 5
-    METADATA_SCHEMA_VERSION = 1
+    FORMAT_VERSION = 6
+    METADATA_SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -112,14 +112,34 @@ class Hdf5SessionWriter:
                     "signal_type": channel.signal_type.value,
                     "display_name": channel.display_name,
                     "unit": channel.unit,
+                    "raw_unit": channel.raw_unit,
                     "sample_rate_hz": channel.sample_rate_hz,
-                    "scale": channel.scale,
-                    "offset": channel.offset,
+                    "conversion": {
+                        "enabled": channel.conversion.enabled,
+                        "profile_id": channel.conversion.profile_id,
+                    },
+                    "conversion_profile_snapshot": (
+                        channel.conversion_profile.to_dict()
+                        if channel.conversion_profile is not None
+                        else None
+                    ),
                     "default_filters": list(channel.default_filters),
                 }
                 for channel in self.session.channels
             ],
             ensure_ascii=False,
+        )
+        h5.attrs["conversion_profiles_json"] = json.dumps(
+            {
+                channel.conversion_profile.profile_id: channel.conversion_profile.to_dict()
+                for channel in self.session.channels
+                if channel.conversion_profile is not None
+            },
+            ensure_ascii=False,
+        )
+        h5.attrs["raw_data_policy"] = (
+            "frames/raw_values contém exclusivamente os valores recebidos; "
+            "conversões e filtros são derivados reproduzíveis."
         )
         h5.attrs["active_filters_json"] = json.dumps(
             {str(index): list(filters) for index, filters in self.active_filters.items()},

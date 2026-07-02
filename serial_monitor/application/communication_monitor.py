@@ -63,6 +63,16 @@ class _SequenceTracker:
         self.last_value = None
         self.diagnostics = _MutableSequenceDiagnostics()
 
+    def reset_baseline(self) -> None:
+        """Esquece apenas a última sequência aceita.
+
+        Os contadores de diagnóstico são preservados. Isso permite iniciar uma
+        nova conexão serial considerando o primeiro quadro recebido como uma
+        nova referência, mesmo que o firmware tenha reiniciado a sequência.
+        """
+
+        self.last_value = None
+
     def classify(self, value: int) -> SequenceObservation:
         if not 0 <= value <= UINT32_MAX:
             raise ValueError(f"Contador fora da faixa uint32: {value}.")
@@ -156,6 +166,18 @@ class CommunicationMonitor:
         self._invalid_frames = 0
         self._checksum_errors = 0
         self._timestamp_regressions = 0
+        self._last_timestamp_us = None
+
+    def begin_stream(self) -> None:
+        """Inicia uma nova continuidade serial sem apagar os diagnósticos.
+
+        O primeiro ``sequence_id`` e o primeiro ``timestamp_us`` recebidos após
+        a chamada passam a ser referências válidas. Essa operação é usada em
+        reconexões e ao limpar a visualização, evitando que um contador
+        reiniciado pelo microcontrolador bloqueie os novos quadros.
+        """
+
+        self._sequence_tracker.reset_baseline()
         self._last_timestamp_us = None
 
     def record_invalid_frame(self) -> None:

@@ -13,7 +13,7 @@ def test_validate_session_declares_bool_and_returns_true_and_false():
     function = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "validate_session"
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "_validate_session"
     )
 
     assert isinstance(function.returns, ast.Name)
