@@ -219,11 +219,11 @@ class LivePage(QWidget):
         root.addWidget(self.live_group, stretch=1)
 
     def set_fullscreen_mode(self, enabled: bool) -> None:
-        """Ajusta o layout sem ocultar aquisição ou gravação.
+        """Ajusta apenas margens e espaçamentos para o modo de tela cheia.
 
-        Em tela cheia, somente o título e os atalhos de navegação secundários
-        são ocultados. Os botões de conexão, gravação, finalização e cancelamento
-        e o estado da sessão permanecem visíveis.
+        Todos os controles da faixa superior permanecem visíveis, incluindo
+        Configuração, Sessões, Tela cheia e Menu. Os controles de conexão,
+        gravação e o resumo da sessão também continuam disponíveis.
         """
 
         enabled = bool(enabled)
@@ -231,12 +231,17 @@ class LivePage(QWidget):
             return
 
         self._fullscreen_layout = enabled
-        self.title_label.setVisible(not enabled)
-        self.open_config_button.setVisible(not enabled)
-        self.open_stored_button.setVisible(not enabled)
-        self.back_menu_button.setVisible(not enabled)
 
-        # A gravação deve continuar controlável na tela cheia.
+        # Mantém a mesma composição da faixa superior nos dois modos.
+        self.header_widget.setVisible(True)
+        self.title_label.setVisible(True)
+        self.navigation_widget.setVisible(True)
+        self.open_config_button.setVisible(True)
+        self.open_stored_button.setVisible(True)
+        self.fullscreen_button.setVisible(True)
+        self.back_menu_button.setVisible(True)
+
+        # Aquisição, gravação e estado permanecem controláveis em tela cheia.
         self.controls_group.setVisible(True)
         self.recording_group.setVisible(True)
 
