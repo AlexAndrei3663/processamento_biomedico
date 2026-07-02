@@ -11,17 +11,18 @@ from serial_monitor.app.system_report import collect_system_report
 from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
 from serial_monitor.application.recording_service import RecordingQueueFullError, RecordingService
 from serial_monitor.application.session_service import SessionService
-from serial_monitor.domain.models import AcquisitionSnapshot, SampleFrame
+from serial_monitor.application.storage_workers import CsvExportWorker, IntegrityCheckWorker
+from serial_monitor.domain.models import AcquisitionSnapshot, SampleFrame, StoredSessionSummary
 from serial_monitor.infrastructure.serial.protocol import FrameCsvParser
 from serial_monitor.infrastructure.serial.serial_reader import SerialReader
 from serial_monitor.infrastructure.storage.config_repository import ConfigRepository
-from serial_monitor.infrastructure.storage.session_repository import SessionRepository, StoredSessionSummary
+from serial_monitor.infrastructure.storage.session_repository import SessionRepository
 from serial_monitor.processing.filter_pipeline import ProcessingService
 from serial_monitor.ui.main_window import MainWindow
 
 
 class MainController(QObject):
-    """Controlador da navegação, aquisição, processamento, armazenamento, presets e execução em Raspberry Pi."""
+    """Controlador da aquisição, navegação e interface touch para Raspberry Pi."""
 
     def __init__(
         self,
@@ -50,6 +51,8 @@ class MainController(QObject):
         self._stored_raw_snapshot: AcquisitionSnapshot | None = None
         self._last_summary_frame_count = -1
         self._last_rendered_sequence_id: int | None = None
+        self._export_worker: CsvExportWorker | None = None
+        self._integrity_worker: IntegrityCheckWorker | None = None
 
         self.view_timer = QTimer(self)
         self.view_timer.setInterval(self.settings.update_interval_ms)
@@ -58,7 +61,8 @@ class MainController(QObject):
 
         self._connect_signals()
         self.window.update_recording_status(self.recording_service.status())
-        self.refresh_presets()
+        self._finalize_interrupted_sessions()
+        self._refresh_presets(auto_load_first=True)
         self.refresh_stored_sessions()
         self.log("INFO", "Controlador inicializado.")
         self._log_startup_report()
@@ -96,7 +100,6 @@ class MainController(QObject):
         live.start_recording_button.clicked.connect(self.start_recording)
         live.finalize_recording_button.clicked.connect(self.finalize_recording)
         live.cancel_recording_button.clicked.connect(self.cancel_recording)
-        live.clear_log_button.clicked.connect(self.window.clear_logs)
         live.update_interval_changed.connect(self.update_view_interval)
         live.filter_toggled.connect(self.on_filter_toggled)
         live.display_mode_changed.connect(self.on_display_mode_changed)
@@ -108,6 +111,8 @@ class MainController(QObject):
         stored.refresh_button.clicked.connect(self.refresh_stored_sessions)
         stored.open_selected_button.clicked.connect(self.open_selected_stored_session)
         stored.export_csv_button.clicked.connect(self.export_selected_session_csv)
+        stored.cancel_export_button.clicked.connect(self.cancel_session_export)
+        stored.verify_integrity_button.clicked.connect(self.verify_selected_session_integrity)
         stored.delete_selected_button.clicked.connect(self.delete_selected_stored_session)
 
         self.serial_reader.frame_received.connect(self.on_frame_received)
@@ -153,6 +158,11 @@ class MainController(QObject):
         return response == QMessageBox.Yes
 
     def shutdown(self) -> None:
+        if self._export_worker is not None and self._export_worker.isRunning():
+            self._export_worker.request_cancel()
+            self._export_worker.wait(3000)
+        if self._integrity_worker is not None and self._integrity_worker.isRunning():
+            self._integrity_worker.wait(3000)
         if self.serial_reader.isRunning():
             self.serial_reader.stop()
         if self.recording_service.is_active:
@@ -197,9 +207,30 @@ class MainController(QObject):
 
     @pyqtSlot()
     def refresh_presets(self) -> None:
+        self._refresh_presets(auto_load_first=False)
+
+    def _refresh_presets(self, *, auto_load_first: bool) -> None:
         presets = self.config_repository.list_presets()
         self.window.update_presets(presets)
+        if auto_load_first and presets:
+            self.window.apply_preset(presets[0])
+            self.log("CONFIG", f"Primeiro preset carregado automaticamente: {presets[0].name}.")
         self.log("CONFIG", f"Presets de configuração encontrados: {len(presets)}.")
+
+    def _finalize_interrupted_sessions(self) -> None:
+        try:
+            results = self.session_repository.finalize_incomplete_sessions()
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível finalizar sessões interrompidas: {exc}")
+            return
+        for result in results:
+            self.log(
+                "STORAGE",
+                (
+                    f"Sessão interrompida marcada como finalizada: {result.session_id}; "
+                    f"frames={result.frames_recovered}; descartados={result.frames_discarded}."
+                ),
+            )
 
     @pyqtSlot()
     def save_config_preset(self) -> None:
@@ -259,7 +290,12 @@ class MainController(QObject):
 
     @pyqtSlot()
     def refresh_stored_sessions(self) -> None:
-        summaries = self.session_repository.list_sessions()
+        summaries = self.session_repository.list_sessions(include_partial=False)
+        active_status = self.recording_service.status()
+        if active_status.is_active and active_status.session_id is not None:
+            summaries = [
+                item for item in summaries if item.session_id != active_status.session_id
+            ]
         self.window.update_stored_sessions(summaries)
         if summaries:
             self.window.update_stored_details(self._format_summary_details(summaries[0]))
@@ -270,7 +306,7 @@ class MainController(QObject):
         selected_id = self.window.selected_stored_session_id
         if selected_id is None:
             return
-        for summary in self.session_repository.list_sessions():
+        for summary in self.session_repository.list_sessions(include_partial=False):
             if summary.session_id == selected_id:
                 self.window.update_stored_details(self._format_summary_details(summary))
                 return
@@ -476,14 +512,24 @@ class MainController(QObject):
     @pyqtSlot()
     def open_selected_stored_session(self) -> None:
         session_id = self.window.selected_stored_session_id
-        if session_id is None:
+        summary = self.window.selected_stored_summary
+        if session_id is None or summary is None:
             self.log("INFO", "Selecione uma sessão armazenada para abrir.")
             return
 
+        first_timestamp = summary.first_timestamp_us or 0
+        start_us = first_timestamp + int(round(self.window.selected_stored_start_seconds * 1_000_000))
+        end_us = start_us + int(round(self.window.selected_stored_duration_seconds * 1_000_000))
+
         try:
-            stored = self.session_repository.load(session_id)
+            stored = self.session_repository.load_window(
+                session_id,
+                start_us=start_us,
+                end_us=end_us,
+                max_points=self.window.selected_stored_max_points,
+            )
         except Exception as exc:
-            self.log("ERRO", f"Não foi possível abrir a sessão armazenada: {exc}")
+            self.log("ERRO", f"Não foi possível abrir o intervalo da sessão: {exc}")
             return
 
         if self.serial_reader.isRunning():
@@ -498,9 +544,13 @@ class MainController(QObject):
         self.window.build_signal_tabs(stored.session)
         self.window.show_live()
         self.refresh_live_view(force=True)
+        decimation_note = " com redução visual" if stored.decimated_for_display else ""
         self.log(
             "STORAGE",
-            f"Sessão armazenada aberta: {stored.summary.session_id} ({stored.summary.frames_received} frames).",
+            (
+                f"Sessão aberta: {stored.summary.session_id}; "
+                f"{stored.loaded_frames}/{stored.total_frames} frames carregados{decimation_note}."
+            ),
         )
 
     @pyqtSlot()
@@ -509,13 +559,87 @@ class MainController(QObject):
         if session_id is None:
             self.log("INFO", "Selecione uma sessão armazenada para exportar.")
             return
-        try:
-            csv_path = self.session_repository.export_csv(session_id)
-        except Exception as exc:
-            self.log("ERRO", f"Não foi possível exportar CSV: {exc}")
+        if self._export_worker is not None and self._export_worker.isRunning():
+            self.log("INFO", "Já existe uma exportação CSV em andamento.")
             return
+
+        worker = CsvExportWorker(self.session_repository, session_id)
+        worker.progress_changed.connect(self._on_export_progress)
+        worker.completed.connect(self._on_export_completed)
+        worker.cancelled.connect(self._on_export_cancelled)
+        worker.failed.connect(self._on_export_failed)
+        worker.finished.connect(self._clear_export_worker)
+        self._export_worker = worker
+        self.window.set_stored_export_running(True)
+        self.window.update_stored_export_progress(0, 0, 0)
+        self.log("STORAGE", f"Exportação CSV iniciada: {session_id}.")
+        worker.start()
+
+    @pyqtSlot()
+    def cancel_session_export(self) -> None:
+        if self._export_worker is None or not self._export_worker.isRunning():
+            return
+        self._export_worker.request_cancel()
+        self.log("STORAGE", "Cancelamento da exportação solicitado.")
+
+    @pyqtSlot(int, int, int)
+    def _on_export_progress(self, percent: int, completed: int, total: int) -> None:
+        self.window.update_stored_export_progress(percent, completed, total)
+
+    @pyqtSlot(str)
+    def _on_export_completed(self, path: str) -> None:
+        self.window.finish_stored_export(f"Exportação concluída: {path}", success=True)
         self.update_selected_stored_details()
-        self.log("STORAGE", f"CSV exportado: {csv_path}.")
+        self.log("STORAGE", f"CSV exportado: {path}.")
+
+    @pyqtSlot()
+    def _on_export_cancelled(self) -> None:
+        self.window.finish_stored_export("Exportação cancelada; arquivo temporário removido.", success=False)
+        self.log("STORAGE", "Exportação CSV cancelada.")
+
+    @pyqtSlot(str)
+    def _on_export_failed(self, message: str) -> None:
+        self.window.finish_stored_export(f"Falha na exportação: {message}", success=False)
+        self.log("ERRO", f"Não foi possível exportar CSV: {message}")
+
+    @pyqtSlot()
+    def _clear_export_worker(self) -> None:
+        self._export_worker = None
+
+    @pyqtSlot()
+    def verify_selected_session_integrity(self) -> None:
+        session_id = self.window.selected_stored_session_id
+        if session_id is None:
+            self.log("INFO", "Selecione uma sessão para verificar.")
+            return
+        if self._integrity_worker is not None and self._integrity_worker.isRunning():
+            self.log("INFO", "Já existe uma verificação de integridade em andamento.")
+            return
+        worker = IntegrityCheckWorker(self.session_repository, session_id)
+        worker.completed.connect(self._on_integrity_completed)
+        worker.failed.connect(self._on_integrity_failed)
+        worker.finished.connect(self._clear_integrity_worker)
+        self._integrity_worker = worker
+        self.window.stored_page.verify_integrity_button.setEnabled(False)
+        self.log("STORAGE", f"Verificação de integridade iniciada: {session_id}.")
+        worker.start()
+
+    @pyqtSlot(str)
+    def _on_integrity_completed(self, status: str) -> None:
+        self.refresh_stored_sessions()
+        self.log("STORAGE", f"Verificação de integridade concluída: {status}.")
+
+    @pyqtSlot(str)
+    def _on_integrity_failed(self, message: str) -> None:
+        self.window.stored_page.verify_integrity_button.setEnabled(True)
+        self.log("ERRO", f"Falha na verificação de integridade: {message}")
+
+    @pyqtSlot()
+    def _clear_integrity_worker(self) -> None:
+        self._integrity_worker = None
+        self.window.stored_page.verify_integrity_button.setEnabled(
+            self.window.selected_stored_session_id is not None
+        )
 
     @pyqtSlot()
     def delete_selected_stored_session(self) -> None:
@@ -561,13 +685,13 @@ class MainController(QObject):
 
     @pyqtSlot()
     def refresh_live_view(self, force: bool = False) -> None:
-        # O estado do gravador é atualizado mesmo sem novas amostras.
+        # O estado do gravador é atualizado independentemente da página exibida.
         self.window.update_recording_status(self.recording_service.status())
 
-        if (
-            not force
-            and self.window.stack.currentWidget() is not self.window.live_page
-        ):
+        current_widget = self.window.stack.currentWidget()
+        live_visible = current_widget is self.window.live_page
+        config_visible = current_widget is self.window.config_page
+        if not force and not live_visible and not config_visible:
             return
 
         raw_snapshot = self._stored_raw_snapshot or self.acquisition_service.snapshot()
@@ -578,7 +702,8 @@ class MainController(QObject):
             return
 
         processed_snapshot = self.processing_service.process(raw_snapshot)
-        self.window.update_live_view(processed_snapshot)
+        if live_visible or force:
+            self.window.update_live_view(processed_snapshot)
 
         if force or processed_snapshot.frames_received != self._last_summary_frame_count:
             self.window.update_buffer_summary(processed_snapshot)
@@ -664,14 +789,31 @@ class MainController(QObject):
 
     def _format_summary_details(self, summary: StoredSessionSummary) -> str:
         csv_path = summary.metadata_path.parent / f"{summary.session_id}.csv"
+        first_time = (
+            f"{summary.first_timestamp_us} µs" if summary.first_timestamp_us is not None else "--"
+        )
+        last_time = (
+            f"{summary.last_timestamp_us} µs" if summary.last_timestamp_us is not None else "--"
+        )
         return "\n".join(
             [
                 f"ID: {summary.session_id}",
                 f"Criada em: {summary.created_at}",
-                f"Frames gravados: {summary.frames_received}",
+                f"Frames disponíveis: {summary.frames_received}",
                 f"Estado: {summary.state}",
-                f"Duração: {summary.duration_seconds:.3f} s",
+                f"Duração registrada: {summary.duration_seconds:.3f} s",
+                f"Extensão temporal dos dados: {summary.time_span_seconds:.3f} s",
+                f"Primeiro timestamp: {first_time}",
+                f"Último timestamp: {last_time}",
                 f"Motivo de encerramento: {summary.end_reason or '--'}",
+                "",
+                f"Versão do formato: {summary.format_version}",
+                f"Versão do software: {summary.software_version or '--'}",
+                f"Versão do protocolo: {summary.protocol_version or '--'}",
+                f"Integridade: {summary.integrity_status}",
+                f"SHA-256: {summary.content_sha256 or '--'}",
+                f"Tamanho do arquivo: {summary.file_size_bytes / (1024 * 1024):.3f} MiB",
+                "",
                 f"Eventos de gap: {summary.gap_events}",
                 f"Frames ausentes estimados: {summary.missing_frames}",
                 f"Frames duplicados: {summary.duplicate_frames}",
@@ -688,6 +830,7 @@ class MainController(QObject):
                 f"CSV: {csv_path if csv_path.exists() else 'ainda não exportado'}",
             ]
         )
+
 
 
 def run() -> int:

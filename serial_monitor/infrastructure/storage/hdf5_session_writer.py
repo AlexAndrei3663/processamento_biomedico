@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -9,17 +10,16 @@ from typing import Iterable, Mapping, Sequence
 import h5py
 import numpy as np
 
+from serial_monitor import PROTOCOL_VERSION, SOFTWARE_VERSION
 from serial_monitor.domain.models import CommunicationStats, SampleFrame, SessionConfig
+from serial_monitor.infrastructure.storage.hdf5_integrity import update_content_hash
 
 
 class Hdf5SessionWriter:
-    """Escritor incremental de uma sessão sincronizada multicanal.
+    """Escritor incremental de uma sessão sincronizada multicanal."""
 
-    Somente a thread de gravação deve acessar esta instância. Os datasets são
-    extensíveis e recebem lotes de frames sem reescrever o arquivo inteiro.
-    """
-
-    FORMAT_VERSION = 4
+    FORMAT_VERSION = 5
+    METADATA_SCHEMA_VERSION = 1
 
     def __init__(
         self,
@@ -48,6 +48,9 @@ class Hdf5SessionWriter:
         self._values_dataset: h5py.Dataset | None = None
         self._frames_written = 0
         self._started_at = datetime.now()
+        self._content_hasher = hashlib.sha256()
+        self._first_timestamp_us: int | None = None
+        self._last_timestamp_us: int | None = None
 
     @property
     def frames_written(self) -> int:
@@ -73,13 +76,21 @@ class Hdf5SessionWriter:
         self._file = h5
 
         h5.attrs["format_version"] = self.FORMAT_VERSION
+        h5.attrs["metadata_schema_version"] = self.METADATA_SCHEMA_VERSION
+        h5.attrs["software_version"] = SOFTWARE_VERSION
+        h5.attrs["protocol_version"] = PROTOCOL_VERSION
         h5.attrs["session_id"] = self.session_id
         h5.attrs["state"] = "recording"
+        h5.attrs["integrity_status"] = "recording"
+        h5.attrs["content_sha256"] = ""
         h5.attrs["created_at"] = self._started_at.isoformat(timespec="milliseconds")
         h5.attrs["started_at"] = self._started_at.isoformat(timespec="milliseconds")
         h5.attrs["ended_at"] = ""
         h5.attrs["end_reason"] = ""
         h5.attrs["frames_written"] = 0
+        h5.attrs["confirmed_frames"] = 0
+        h5.attrs["first_timestamp_us"] = -1
+        h5.attrs["last_timestamp_us"] = -1
         h5.attrs["channel_count"] = self.session.channel_count
         h5.attrs["base_sample_rate_hz"] = self.session.base_sample_rate_hz
         h5.attrs["window_size"] = self.session.window_size
@@ -185,11 +196,24 @@ class Hdf5SessionWriter:
         self._values_dataset[start:end, :] = values
         self._frames_written = end
         self._file.attrs["frames_written"] = self._frames_written
+
+        if self._first_timestamp_us is None:
+            self._first_timestamp_us = int(timestamps[0])
+        self._last_timestamp_us = int(timestamps[-1])
+        update_content_hash(self._content_hasher, sequences, timestamps, values)
         return len(batch)
 
     def flush(self) -> None:
         if self._file is not None:
             self._file.attrs["frames_written"] = self._frames_written
+            self._file.attrs["confirmed_frames"] = self._frames_written
+            self._file.attrs["content_sha256"] = self._content_hasher.hexdigest()
+            self._file.attrs["first_timestamp_us"] = (
+                self._first_timestamp_us if self._first_timestamp_us is not None else -1
+            )
+            self._file.attrs["last_timestamp_us"] = (
+                self._last_timestamp_us if self._last_timestamp_us is not None else -1
+            )
             self._file.flush()
 
     def finalize(
@@ -202,10 +226,11 @@ class Hdf5SessionWriter:
             raise RuntimeError("O escritor HDF5 não está aberto.")
 
         ended_at = datetime.now()
+        self.flush()
         self._file.attrs["state"] = "completed"
+        self._file.attrs["integrity_status"] = "verified"
         self._file.attrs["ended_at"] = ended_at.isoformat(timespec="milliseconds")
         self._file.attrs["end_reason"] = end_reason
-        self._file.attrs["frames_written"] = self._frames_written
         self._file.attrs["duration_seconds"] = max(
             0.0,
             (ended_at - self._started_at).total_seconds(),
@@ -229,11 +254,12 @@ class Hdf5SessionWriter:
     ) -> Path:
         if self._file is not None:
             ended_at = datetime.now()
+            self.flush()
             self._file.attrs["state"] = "failed"
+            self._file.attrs["integrity_status"] = "partial"
             self._file.attrs["ended_at"] = ended_at.isoformat(timespec="milliseconds")
             self._file.attrs["end_reason"] = "recording_error"
             self._file.attrs["error_message"] = error_message
-            self._file.attrs["frames_written"] = self._frames_written
             self._file.attrs["duration_seconds"] = max(
                 0.0,
                 (ended_at - self._started_at).total_seconds(),

@@ -8,10 +8,9 @@ from PyQt5.QtGui import QCloseEvent, QKeyEvent
 from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
 from serial_monitor.app.runtime_settings import RuntimeSettings
-from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, RecordingStatus, SessionConfig
+from serial_monitor.domain.models import ProcessedAcquisitionSnapshot, RecordingStatus, SessionConfig, StoredSessionSummary
 from serial_monitor.domain.enums import WindowPageIndex
 from serial_monitor.infrastructure.storage.config_repository import SessionPreset
-from serial_monitor.infrastructure.storage.session_repository import StoredSessionSummary
 from serial_monitor.ui.pages.config_page import ConfigPage
 from serial_monitor.ui.pages.live_page import LivePage
 from serial_monitor.ui.pages.menu_page import MenuPage
@@ -25,7 +24,55 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = settings or RuntimeSettings()
         self.setWindowTitle("Monitor de Sinais Biomédicos")
-        self.resize(1260, 820)
+        self.resize(1024, 600)
+
+        self.setStyleSheet(
+            """
+            QPushButton {
+                min-height: 46px;
+                padding: 7px 12px;
+                font-size: 15px;
+                font-weight: 600;
+            }
+            QComboBox, QSpinBox, QDoubleSpinBox {
+                min-height: 42px;
+                padding: 4px 8px;
+                font-size: 14px;
+            }
+            QListWidget {
+                font-size: 15px;
+            }
+            QListWidget::item {
+                min-height: 38px;
+                padding: 5px;
+            }
+            QTabBar::tab {
+                min-height: 40px;
+                min-width: 105px;
+                padding: 6px 10px;
+                font-size: 14px;
+            }
+            QCheckBox, QRadioButton {
+                min-height: 36px;
+                spacing: 10px;
+                font-size: 14px;
+            }
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 24px;
+                height: 24px;
+            }
+            QGroupBox {
+                font-size: 14px;
+                font-weight: 600;
+                margin-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+            }
+            """
+        )
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -78,13 +125,11 @@ class MainWindow(QMainWindow):
     def append_log(self, level: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{timestamp}] [{level}] {message}"
-        self.config_page.log.append(line)
-        self.live_page.log.append(line)
+        self.config_page.log.appendPlainText(line)
         self._show_status_message(f"[{level}] {message}", 5000)
 
     def clear_logs(self) -> None:
         self.config_page.log.clear()
-        self.live_page.log.clear()
 
     def build_signal_tabs(self, session: SessionConfig) -> None:
         self.live_page.build_signal_tabs(session, max_plot_points=self.settings.max_plot_points)
@@ -96,7 +141,7 @@ class MainWindow(QMainWindow):
         self.live_page.update_live_view(snapshot)
 
     def update_buffer_summary(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
-        self.live_page.update_buffer_summary(snapshot)
+        self.config_page.update_buffer_summary(snapshot)
 
     def update_recording_status(self, status: RecordingStatus) -> None:
         self.live_page.update_recording_status(status)
@@ -110,6 +155,15 @@ class MainWindow(QMainWindow):
 
     def update_stored_details(self, text: str) -> None:
         self.stored_page.set_details(text)
+
+    def set_stored_export_running(self, running: bool) -> None:
+        self.stored_page.set_export_running(running)
+
+    def update_stored_export_progress(self, percent: int, completed: int, total: int) -> None:
+        self.stored_page.update_export_progress(percent, completed, total)
+
+    def finish_stored_export(self, message: str, *, success: bool) -> None:
+        self.stored_page.finish_export(message, success=success)
 
     def update_presets(self, presets: list[SessionPreset]) -> None:
         self.config_page.set_presets(presets)
@@ -141,11 +195,28 @@ class MainWindow(QMainWindow):
 
     @property
     def preset_name_text(self) -> str:
-        return self.config_page.preset_name_input.text().strip()
+        return self.config_page.preset_name
 
     @property
     def selected_stored_session_id(self) -> str | None:
         return self.stored_page.selected_session_id
+
+
+    @property
+    def selected_stored_summary(self) -> StoredSessionSummary | None:
+        return self.stored_page.selected_summary
+
+    @property
+    def selected_stored_start_seconds(self) -> float:
+        return self.stored_page.selected_start_seconds
+
+    @property
+    def selected_stored_duration_seconds(self) -> float:
+        return self.stored_page.selected_duration_seconds
+
+    @property
+    def selected_stored_max_points(self) -> int:
+        return self.stored_page.selected_max_points
 
     @property
     def selected_port(self) -> str:
@@ -153,20 +224,20 @@ class MainWindow(QMainWindow):
 
     @property
     def baudrate_text(self) -> str:
-        return self.config_page.baudrate_input.text().strip()
+        return str(self.config_page.baudrate)
 
     @property
     def sample_rate_text(self) -> str:
-        return self.config_page.sample_rate_input.text().strip()
+        return str(self.config_page.sample_rate_hz)
 
     @property
     def window_size_text(self) -> str:
-        return self.config_page.window_size_input.text().strip()
+        return str(self.config_page.window_size)
 
     @property
     def signal_order_text(self) -> str:
-        return self.config_page.signal_order_input.text()
+        return self.config_page.signal_order_text
 
     @property
     def sample_frame_text(self) -> str:
-        return self.config_page.sample_frame_input.text()
+        return self.config_page.sample_frame_text

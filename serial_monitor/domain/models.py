@@ -81,12 +81,7 @@ class SequenceDiagnostics:
 
 @dataclass(frozen=True, slots=True)
 class CommunicationStats:
-    """Contadores de integridade da comunicação durante a sessão.
-
-    ``valid_frames`` conta somente quadros aceitos pelo modelo de aquisição. Quadros
-    duplicados, fora de ordem ou com timestamp não crescente são contabilizados, mas
-    não são inseridos nos buffers de visualização.
-    """
+    """Contadores de integridade da comunicação durante a sessão."""
 
     valid_frames: int = 0
     invalid_frames: int = 0
@@ -113,13 +108,7 @@ class CommunicationStats:
 
 @dataclass(slots=True)
 class SampleFrame:
-    """Um quadro multicanal correspondente a um ciclo de varredura.
-
-    ``sequence_id`` identifica o ciclo de aquisição multicanal e também o quadro
-    transmitido, pois nesta versão existe exatamente um ciclo por quadro.
-    ``timestamp_us`` é gerado pelo STM32 e representa o instante da primeira conversão
-    do ciclo, em microssegundos desde o boot do firmware.
-    """
+    """Quadro multicanal correspondente a um ciclo de varredura."""
 
     sequence_id: int
     timestamp_us: int
@@ -206,8 +195,6 @@ class ProcessedAcquisitionSnapshot:
         return self.communication.valid_frames
 
 
-
-
 @dataclass(frozen=True, slots=True)
 class RecordingStatus:
     state: RecordingState = RecordingState.IDLE
@@ -229,6 +216,7 @@ class RecordingStatus:
     def is_active(self) -> bool:
         return self.state in {RecordingState.RECORDING, RecordingState.FINALIZING}
 
+
 @dataclass(frozen=True, slots=True)
 class StoredSessionSummary:
     session_id: str
@@ -248,6 +236,21 @@ class StoredSessionSummary:
     state: str = "completed"
     duration_seconds: float = 0.0
     end_reason: str | None = None
+    is_partial: bool = False
+    format_version: int = 0
+    software_version: str = ""
+    protocol_version: str = ""
+    integrity_status: str = "unknown"
+    content_sha256: str | None = None
+    first_timestamp_us: int | None = None
+    last_timestamp_us: int | None = None
+    file_size_bytes: int = 0
+
+    @property
+    def time_span_seconds(self) -> float:
+        if self.first_timestamp_us is None or self.last_timestamp_us is None:
+            return 0.0
+        return max(0.0, (self.last_timestamp_us - self.first_timestamp_us) / 1_000_000.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +259,21 @@ class StoredSessionData:
     session: SessionConfig
     snapshot: AcquisitionSnapshot
     active_filters: Dict[int, List[str]]
+    loaded_start_us: int | None = None
+    loaded_end_us: int | None = None
+    loaded_frames: int = 0
+    total_frames: int = 0
+    decimated_for_display: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRecoveryResult:
+    session_id: str
+    source_path: Path
+    output_path: Path
+    frames_recovered: int
+    frames_discarded: int
+    integrity_status: str
 
 
 @dataclass(frozen=True, slots=True)
