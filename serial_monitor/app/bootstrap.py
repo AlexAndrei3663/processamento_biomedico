@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from typing import Any
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSlot
@@ -10,6 +11,7 @@ from serial_monitor.app.runtime_settings import RuntimeSettings, parse_runtime_s
 from serial_monitor.app.system_report import collect_system_report
 from serial_monitor.application.conversion_service import ConversionService
 from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
+from serial_monitor.application.operational_monitor import OperationalMonitor
 from serial_monitor.application.recording_service import RecordingQueueFullError, RecordingService
 from serial_monitor.application.session_service import SessionService
 from serial_monitor.application.storage_workers import CsvExportWorker, IntegrityCheckWorker
@@ -36,6 +38,7 @@ class MainController(QObject):
         config_repository: ConfigRepository,
         conversion_profile_repository: ConversionProfileRepository,
         recording_service: RecordingService,
+        operational_monitor: OperationalMonitor,
         settings: RuntimeSettings,
     ) -> None:
         super().__init__()
@@ -48,6 +51,7 @@ class MainController(QObject):
         self.config_repository = config_repository
         self.conversion_profile_repository = conversion_profile_repository
         self.recording_service = recording_service
+        self.operational_monitor = operational_monitor
         self.settings = settings
         self._session = None
         self._stored_raw_snapshot: AcquisitionSnapshot | None = None
@@ -55,15 +59,24 @@ class MainController(QObject):
         self._last_rendered_sequence_id: int | None = None
         self._export_worker: CsvExportWorker | None = None
         self._integrity_worker: IntegrityCheckWorker | None = None
+        self._last_frame_log_monotonic = 0.0
 
         self.view_timer = QTimer(self)
         self.view_timer.setInterval(self.settings.update_interval_ms)
         self.view_timer.timeout.connect(self.refresh_live_view)
         self.view_timer.start()
 
+        self.operational_timer = QTimer(self)
+        self.operational_timer.setInterval(
+            self.settings.operational_update_interval_ms
+        )
+        self.operational_timer.timeout.connect(self.refresh_operational_status)
+        self.operational_timer.start()
+
         self._connect_signals()
         self._load_conversion_profiles()
         self.window.update_recording_status(self.recording_service.status())
+        self.refresh_operational_status()
         self._finalize_interrupted_sessions()
         self._refresh_presets(auto_load_first=True)
         self.refresh_stored_sessions()
@@ -157,7 +170,9 @@ class MainController(QObject):
                 f"{report.platform} | Python {report.python} | CPUs={report.cpu_count} | "
                 f"update={self.settings.update_interval_ms} ms | max_plot_points={self.settings.max_plot_points} | "
                 f"data_dir={self.settings.data_dir} | "
-                f"conversion_profiles={self.settings.conversion_profiles_path}"
+                f"conversion_profiles={self.settings.conversion_profiles_path} | "
+                f"operational_update={self.settings.operational_update_interval_ms} ms | "
+                f"minimum_free_disk={self.settings.minimum_free_disk_mb} MiB"
             ),
         )
 
@@ -172,6 +187,8 @@ class MainController(QObject):
         return response == QMessageBox.Yes
 
     def shutdown(self) -> None:
+        self.view_timer.stop()
+        self.operational_timer.stop()
         if self._export_worker is not None and self._export_worker.isRunning():
             self._export_worker.request_cancel()
             self._export_worker.wait(3000)
@@ -326,11 +343,8 @@ class MainController(QObject):
                 self.window.update_stored_details(self._format_summary_details(summary))
                 return
 
-    @pyqtSlot()
-    def validate_session(self) -> None:
-        self._validate_session()
-
-    def _validate_session(self) -> bool:
+    @pyqtSlot(result=bool)
+    def validate_session(self) -> bool:
         try:
             self._session = self.session_service.build_session(
                 port=self.window.selected_port,
@@ -392,6 +406,7 @@ class MainController(QObject):
         assert self._session is not None
         self._stored_raw_snapshot = None
         self._last_rendered_sequence_id = None
+        self._last_frame_log_monotonic = 0.0
         self.acquisition_service.start()
         self.window.clear_signal_tabs()
         self.refresh_live_view(force=True)
@@ -665,10 +680,22 @@ class MainController(QObject):
         self.refresh_live_view(force=True)
 
     @pyqtSlot()
-    def refresh_live_view(self, force: bool = False) -> None:
-        # O estado do gravador é atualizado independentemente da página exibida.
-        self.window.update_recording_status(self.recording_service.status())
+    def refresh_operational_status(self) -> None:
+        status = self.recording_service.status()
+        communication = self.acquisition_service.snapshot().communication
+        resources = self.operational_monitor.sample()
+        self.window.update_recording_status(status)
+        self.window.update_operational_status(
+            communication,
+            resources,
+            crc_available=False,
+            minimum_free_disk_bytes=self.settings.minimum_free_disk_mb
+            * 1024
+            * 1024,
+        )
 
+    @pyqtSlot()
+    def refresh_live_view(self, force: bool = False) -> None:
         current_widget = self.window.stack.currentWidget()
         live_visible = current_widget is self.window.live_page
         config_visible = current_widget is self.window.config_page
@@ -720,14 +747,16 @@ class MainController(QObject):
             )
             return
 
-        if snapshot.frames_received == 1 or snapshot.frames_received % 50 == 0:
+        now = time.monotonic()
+        if snapshot.frames_received == 1 or now - self._last_frame_log_monotonic >= 5.0:
+            self._last_frame_log_monotonic = now
             stats = snapshot.communication
             self.log(
                 "FRAME",
                 (
                     f"frames={snapshot.frames_received}, seq={snapshot.last_sequence_id}, "
-                    f"gaps={stats.gap_events}, "
-                    f"ausentes={stats.missing_frames}"
+                    f"gaps={stats.gap_events}, ausentes={stats.missing_frames}, "
+                    f"inválidos={stats.invalid_frames}"
                 ),
             )
 
@@ -844,7 +873,9 @@ def run() -> int:
             queue_capacity=settings.recording_queue_capacity,
             batch_size=settings.recording_batch_size,
             flush_interval_s=settings.recording_flush_interval_ms / 1000.0,
+            minimum_free_disk_bytes=settings.minimum_free_disk_mb * 1024 * 1024,
         ),
+        operational_monitor=OperationalMonitor(settings.sessions_dir),
         settings=settings,
     )
     window.controller = controller  # type: ignore[attr-defined]

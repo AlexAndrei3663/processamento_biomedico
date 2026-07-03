@@ -126,3 +126,21 @@ def test_reconnection_resets_sequence_baseline_and_plot_follows_timestamp() -> N
     assert "view_x_min = x_max - x_window" in plot_source
     assert 'x_min = max(0.0, data_x_min) if self._current_domain == "time"' in plot_source
     assert "y_min = min(0.0, data_y_min)" in plot_source
+
+
+def test_operational_panel_exposes_required_diagnostics() -> None:
+    live_source = (ROOT / "serial_monitor/ui/pages/live_page.py").read_text(encoding="utf-8")
+    controller_source = (ROOT / "serial_monitor/app/bootstrap.py").read_text(encoding="utf-8")
+
+    for token in (
+        "missing_frames_label",
+        "crc_errors_label",
+        "disk_free_label",
+        "cpu_label",
+        "memory_label",
+        "temperature_label",
+        "queue_high_watermark",
+    ):
+        assert token in live_source
+    assert "refresh_operational_status" in controller_source
+    assert "OperationalMonitor" in controller_source

@@ -12,7 +12,7 @@ class FrameProtocolError(ValueError):
 
 
 class FrameCsvParser:
-    """Parser do protocolo textual multicanal revisado da Etapa 12.
+    """Parser do protocolo textual multicanal vigente.
 
     Formato oficial::
 

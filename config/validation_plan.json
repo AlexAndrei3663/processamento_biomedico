@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "duration_profiles": {
+    "smoke": 2,
+    "one_minute": 60,
+    "one_hour": 3600,
+    "eight_hours": 28800
+  },
+  "cycles": [
+    {
+      "cycle_id": "cycle1_ecg",
+      "label": "Ciclo 1 — um canal de ECG",
+      "signals": ["ecg"],
+      "base_sample_rate_hz": 500,
+      "window_size": 5000,
+      "conversion_profile_by_channel": {"0": "generic_identity_count_v1"},
+      "filters_by_channel": {"0": ["baseline", "notch_60hz", "bandpass"]},
+      "criteria": {
+        "max_sample_rate_error_percent": 0.5,
+        "max_missing_frames": 0,
+        "max_invalid_frames": 0,
+        "max_queue_usage_percent": 80
+      }
+    },
+    {
+      "cycle_id": "cycle2_two_ecg",
+      "label": "Ciclo 2 — dois canais de ECG",
+      "signals": ["ecg", "ecg"],
+      "base_sample_rate_hz": 500,
+      "window_size": 5000,
+      "conversion_profile_by_channel": {
+        "0": "generic_identity_count_v1",
+        "1": "generic_identity_count_v1"
+      },
+      "filters_by_channel": {
+        "0": ["baseline", "notch_60hz", "bandpass"],
+        "1": ["baseline", "notch_60hz", "bandpass"]
+      },
+      "criteria": {
+        "max_sample_rate_error_percent": 0.5,
+        "max_missing_frames": 0,
+        "max_invalid_frames": 0,
+        "max_queue_usage_percent": 80
+      }
+    },
+    {
+      "cycle_id": "cycle3_ppg",
+      "label": "Ciclo 3 — dois ECG e PPG",
+      "signals": ["ecg", "ecg", "ppg"],
+      "base_sample_rate_hz": 500,
+      "window_size": 5000,
+      "conversion_profile_by_channel": {
+        "0": "generic_identity_count_v1",
+        "1": "generic_identity_count_v1",
+        "2": "generic_identity_count_v1"
+      },
+      "filters_by_channel": {
+        "0": ["baseline", "notch_60hz", "bandpass"],
+        "1": ["baseline", "notch_60hz", "bandpass"],
+        "2": ["dc_remove", "lowpass"]
+      },
+      "criteria": {
+        "max_sample_rate_error_percent": 0.5,
+        "max_missing_frames": 0,
+        "max_invalid_frames": 0,
+        "max_queue_usage_percent": 80
+      }
+    },
+    {
+      "cycle_id": "cycle4_oximetry",
+      "label": "Ciclo 4 — dois ECG, PPG e oximetria",
+      "signals": ["ecg", "ecg", "ppg", "oximetria"],
+      "base_sample_rate_hz": 500,
+      "window_size": 5000,
+      "conversion_profile_by_channel": {
+        "0": "generic_identity_count_v1",
+        "1": "generic_identity_count_v1",
+        "2": "generic_identity_count_v1",
+        "3": "oximetria_percentual_v1"
+      },
+      "filters_by_channel": {
+        "0": ["baseline", "notch_60hz", "bandpass"],
+        "1": ["baseline", "notch_60hz", "bandpass"],
+        "2": ["dc_remove", "lowpass"],
+        "3": ["moving_average"]
+      },
+      "criteria": {
+        "max_sample_rate_error_percent": 0.5,
+        "max_missing_frames": 0,
+        "max_invalid_frames": 0,
+        "max_queue_usage_percent": 80
+      }
+    }
+  ]
+}

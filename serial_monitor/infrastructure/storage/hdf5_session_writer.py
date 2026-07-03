@@ -12,13 +12,17 @@ import numpy as np
 
 from serial_monitor import PROTOCOL_VERSION, SOFTWARE_VERSION
 from serial_monitor.domain.models import CommunicationStats, SampleFrame, SessionConfig
-from serial_monitor.infrastructure.storage.hdf5_integrity import update_content_hash
+from serial_monitor.infrastructure.storage.hdf5_integrity import (
+    HASH_LAYOUT_V2,
+    finalize_dataset_hashes,
+    update_dataset_hashes,
+)
 
 
 class Hdf5SessionWriter:
     """Escritor incremental de uma sessão sincronizada multicanal."""
 
-    FORMAT_VERSION = 6
+    FORMAT_VERSION = 7
     METADATA_SCHEMA_VERSION = 2
 
     def __init__(
@@ -48,7 +52,9 @@ class Hdf5SessionWriter:
         self._values_dataset: h5py.Dataset | None = None
         self._frames_written = 0
         self._started_at = datetime.now()
-        self._content_hasher = hashlib.sha256()
+        self._sequence_hasher = hashlib.sha256()
+        self._timestamp_hasher = hashlib.sha256()
+        self._values_hasher = hashlib.sha256()
         self._first_timestamp_us: int | None = None
         self._last_timestamp_us: int | None = None
 
@@ -83,6 +89,7 @@ class Hdf5SessionWriter:
         h5.attrs["state"] = "recording"
         h5.attrs["integrity_status"] = "recording"
         h5.attrs["content_sha256"] = ""
+        h5.attrs["content_hash_layout"] = HASH_LAYOUT_V2
         h5.attrs["created_at"] = self._started_at.isoformat(timespec="milliseconds")
         h5.attrs["started_at"] = self._started_at.isoformat(timespec="milliseconds")
         h5.attrs["ended_at"] = ""
@@ -220,14 +227,25 @@ class Hdf5SessionWriter:
         if self._first_timestamp_us is None:
             self._first_timestamp_us = int(timestamps[0])
         self._last_timestamp_us = int(timestamps[-1])
-        update_content_hash(self._content_hasher, sequences, timestamps, values)
+        update_dataset_hashes(
+            self._sequence_hasher,
+            self._timestamp_hasher,
+            self._values_hasher,
+            sequences,
+            timestamps,
+            values,
+        )
         return len(batch)
 
     def flush(self) -> None:
         if self._file is not None:
             self._file.attrs["frames_written"] = self._frames_written
             self._file.attrs["confirmed_frames"] = self._frames_written
-            self._file.attrs["content_sha256"] = self._content_hasher.hexdigest()
+            self._file.attrs["content_sha256"] = finalize_dataset_hashes(
+                self._sequence_hasher,
+                self._timestamp_hasher,
+                self._values_hasher,
+            )
             self._file.attrs["first_timestamp_us"] = (
                 self._first_timestamp_us if self._first_timestamp_us is not None else -1
             )

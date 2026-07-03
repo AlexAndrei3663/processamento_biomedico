@@ -75,7 +75,7 @@ def test_hdf5_preserves_raw_and_conversion_snapshot(tmp_path) -> None:
     with h5py.File(tmp_path / "session_test.h5", "r") as h5:
         raw_values = np.array(h5["frames/raw_values"])[..., 0]
         np.testing.assert_array_equal(raw_values, [100.0, 200.0])
-        assert int(np.asarray(h5.attrs["format_version"])) == 6
+        assert int(np.asarray(h5.attrs["format_version"])) == Hdf5SessionWriter.FORMAT_VERSION
         assert "linear_snapshot" in str(h5.attrs["conversion_profiles_json"])
         assert "valores recebidos" in str(h5.attrs["raw_data_policy"])
 

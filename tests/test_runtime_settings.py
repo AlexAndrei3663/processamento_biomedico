@@ -27,6 +27,10 @@ def test_parse_runtime_settings_custom_values() -> None:
         "128",
         "--recording-flush-interval-ms",
         "500",
+        "--minimum-free-disk-mb",
+        "512",
+        "--operational-update-interval-ms",
+        "1500",
     ])
     assert settings.fullscreen is True
     assert settings.update_interval_ms == 150
@@ -35,6 +39,8 @@ def test_parse_runtime_settings_custom_values() -> None:
     assert settings.recording_queue_capacity == 4096
     assert settings.recording_batch_size == 128
     assert settings.recording_flush_interval_ms == 500
+    assert settings.minimum_free_disk_mb == 512
+    assert settings.operational_update_interval_ms == 1500
 
 
 @pytest.mark.parametrize(
@@ -48,6 +54,8 @@ def test_parse_runtime_settings_custom_values() -> None:
         ["--recording-batch-size", "0"],
         ["--recording-queue-capacity", "128", "--recording-batch-size", "256"],
         ["--recording-flush-interval-ms", "10"],
+        ["--minimum-free-disk-mb", "-1"],
+        ["--operational-update-interval-ms", "100"],
     ],
 )
 def test_parse_runtime_settings_rejects_invalid_ranges(args: list[str]) -> None:

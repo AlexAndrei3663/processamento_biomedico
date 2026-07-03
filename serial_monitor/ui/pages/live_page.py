@@ -17,9 +17,11 @@ from PyQt5.QtWidgets import (
 
 from serial_monitor.domain.enums import RecordingState
 from serial_monitor.domain.models import (
+    CommunicationStats,
     ProcessedAcquisitionSnapshot,
     RecordingStatus,
     SessionConfig,
+    SystemResourceSnapshot,
 )
 from serial_monitor.ui.widgets.signal_tab import SignalTab
 
@@ -158,37 +160,58 @@ class LivePage(QWidget):
         self.recording_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         recording_layout = QGridLayout(self.recording_group)
-        recording_layout.setContentsMargins(6, 4, 6, 4)
+        recording_layout.setContentsMargins(6, 3, 6, 3)
         recording_layout.setHorizontalSpacing(8)
-        recording_layout.setVerticalSpacing(0)
+        recording_layout.setVerticalSpacing(1)
 
+        # Linha 1: estado da persistência.
         self.recording_state_label = QLabel("Estado: inativa")
         self.recording_duration_label = QLabel("Duração: 00:00:00")
         self.recording_frames_label = QLabel("Frames: 0/0")
         self.recording_queue_label = QLabel("Fila: 0/0")
         self.recording_size_label = QLabel("Arquivo: 0 B")
-        self.recording_path_label = QLabel("Destino: --")
-        self.recording_path_label.setMinimumWidth(0)
-        self.recording_path_label.setSizePolicy(
-            QSizePolicy.Ignored,
-            QSizePolicy.Preferred,
-        )
-        self.recording_path_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.disk_free_label = QLabel("Disco livre: --")
 
-        labels = (
+        # Linha 2: integridade da comunicação e recursos da Raspberry Pi.
+        self.missing_frames_label = QLabel("Ausentes: 0")
+        self.invalid_frames_label = QLabel("Inválidos: 0")
+        self.crc_errors_label = QLabel("CRC: n/d")
+        self.cpu_label = QLabel("CPU: --")
+        self.memory_label = QLabel("RAM: --")
+        self.temperature_label = QLabel("Temp.: --")
+
+        first_row = (
             self.recording_state_label,
             self.recording_duration_label,
             self.recording_frames_label,
             self.recording_queue_label,
             self.recording_size_label,
-            self.recording_path_label,
+            self.disk_free_label,
         )
-        for column, label in enumerate(labels):
-            label.setMinimumWidth(0)
-            recording_layout.addWidget(label, 0, column)
-            recording_layout.setColumnStretch(column, 2 if column == 5 else 1)
+        second_row = (
+            self.missing_frames_label,
+            self.invalid_frames_label,
+            self.crc_errors_label,
+            self.cpu_label,
+            self.memory_label,
+            self.temperature_label,
+        )
+        for row, labels in enumerate((first_row, second_row)):
+            for column, label in enumerate(labels):
+                label.setMinimumWidth(0)
+                label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+                recording_layout.addWidget(label, row, column)
+                recording_layout.setColumnStretch(column, 1)
+
+        self.recording_path_label = QLabel("Destino: --")
+        self.recording_path_label.setMinimumWidth(0)
+        self.recording_path_label.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Preferred
+        )
+        self.recording_path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        recording_layout.addWidget(self.recording_path_label, 2, 0, 1, 6)
 
         root.addWidget(self.recording_group)
 
@@ -313,9 +336,13 @@ class LivePage(QWidget):
             RecordingState.CANCELLED: "cancelada",
         }
         self.recording_state_label.setText(f"Estado: {labels[status.state]}")
-        if status.state in {RecordingState.RECORDING, RecordingState.FAILED}:
+        if status.state == RecordingState.RECORDING:
             self.recording_state_label.setStyleSheet(
-                "font-weight: 700; color: #b00020; font-size: 14px;"
+                "font-weight: 800; color: #b00020; font-size: 14px;"
+            )
+        elif status.state == RecordingState.FAILED:
+            self.recording_state_label.setStyleSheet(
+                "font-weight: 800; color: #b00020;"
             )
         else:
             self.recording_state_label.setStyleSheet("font-weight: 600;")
@@ -330,8 +357,16 @@ class LivePage(QWidget):
             f"Frames: {status.frames_written}/{status.frames_enqueued}"
         )
         self.recording_queue_label.setText(
-            f"Fila: {status.queue_size}/{status.queue_capacity}"
+            f"Fila: {status.queue_size}/{status.queue_capacity} "
+            f"(máx. {status.queue_high_watermark})"
         )
+        queue_ratio = (
+            status.queue_size / status.queue_capacity
+            if status.queue_capacity > 0
+            else 0.0
+        )
+        self._set_warning_style(self.recording_queue_label, queue_ratio >= 0.80)
+
         self.recording_size_label.setText(
             f"Arquivo: {self._format_bytes(status.file_size_bytes)}"
         )
@@ -356,6 +391,84 @@ class LivePage(QWidget):
         )
         self.cancel_recording_button.setEnabled(
             status.state == RecordingState.RECORDING
+        )
+
+    def update_operational_status(
+        self,
+        communication: CommunicationStats,
+        resources: SystemResourceSnapshot,
+        *,
+        crc_available: bool,
+        minimum_free_disk_bytes: int = 0,
+    ) -> None:
+        """Atualiza perdas, integridade e recursos sem depender do repaint do gráfico."""
+
+        self.missing_frames_label.setText(
+            f"Ausentes: {communication.missing_frames}"
+        )
+        self.invalid_frames_label.setText(
+            f"Inválidos: {communication.invalid_frames}"
+        )
+        self.crc_errors_label.setText(
+            f"CRC: {communication.checksum_errors}" if crc_available else "CRC: n/d"
+        )
+        if not crc_available:
+            self.crc_errors_label.setToolTip(
+                "O protocolo FRAME_CSV atual não transporta CRC. O campo será "
+                "ativado quando o protocolo com integridade for adotado."
+            )
+
+        self.disk_free_label.setText(
+            f"Disco livre: {self._format_bytes(resources.disk_free_bytes)}"
+        )
+        disk_warning = (
+            minimum_free_disk_bytes > 0
+            and resources.disk_free_bytes < minimum_free_disk_bytes
+        )
+        self._set_warning_style(self.disk_free_label, disk_warning)
+
+        self.cpu_label.setText(
+            "CPU: --"
+            if resources.cpu_percent is None
+            else f"CPU: {resources.cpu_percent:.0f}%"
+        )
+        self.memory_label.setText(
+            "RAM: --"
+            if resources.memory_percent is None
+            else f"RAM: {resources.memory_percent:.0f}%"
+        )
+        self.temperature_label.setText(
+            "Temp.: --"
+            if resources.temperature_c is None
+            else f"Temp.: {resources.temperature_c:.1f} °C"
+        )
+
+        self._set_warning_style(
+            self.cpu_label,
+            resources.cpu_percent is not None and resources.cpu_percent >= 90.0,
+        )
+        self._set_warning_style(
+            self.memory_label,
+            resources.memory_percent is not None and resources.memory_percent >= 90.0,
+        )
+        self._set_warning_style(
+            self.temperature_label,
+            resources.temperature_c is not None and resources.temperature_c >= 75.0,
+        )
+        self._set_warning_style(
+            self.missing_frames_label, communication.missing_frames > 0
+        )
+        self._set_warning_style(
+            self.invalid_frames_label, communication.invalid_frames > 0
+        )
+        self._set_warning_style(
+            self.crc_errors_label, crc_available and communication.checksum_errors > 0
+        )
+
+    @staticmethod
+    def _set_warning_style(label: QLabel, warning: bool) -> None:
+        label.setStyleSheet(
+            "font-weight: 700; color: #b00020;" if warning else ""
         )
 
     @staticmethod

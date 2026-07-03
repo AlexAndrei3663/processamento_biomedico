@@ -17,6 +17,8 @@ class RuntimeSettings:
     recording_queue_capacity: int = 8192
     recording_batch_size: int = 256
     recording_flush_interval_ms: int = 1000
+    minimum_free_disk_mb: int = 256
+    operational_update_interval_ms: int = 1000
     conversion_profiles_path: Path = Path("config/conversion_profiles.json")
 
     @property
@@ -77,6 +79,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=1000,
         help="intervalo máximo entre flushes do HDF5",
     )
+    parser.add_argument(
+        "--minimum-free-disk-mb",
+        type=int,
+        default=256,
+        help="espaço livre mínimo exigido para iniciar gravação, em MiB",
+    )
+    parser.add_argument(
+        "--operational-update-interval-ms",
+        type=int,
+        default=1000,
+        help="intervalo do diagnóstico de CPU, RAM, temperatura e disco",
+    )
     return parser
 
 
@@ -96,6 +110,12 @@ def parse_runtime_settings(argv: Sequence[str] | None = None) -> RuntimeSettings
         raise ValueError(
             "--recording-flush-interval-ms deve estar entre 50 e 60000 ms."
         )
+    if not 0 <= namespace.minimum_free_disk_mb <= 1_048_576:
+        raise ValueError("--minimum-free-disk-mb deve estar entre 0 e 1048576 MiB.")
+    if not 250 <= namespace.operational_update_interval_ms <= 60_000:
+        raise ValueError(
+            "--operational-update-interval-ms deve estar entre 250 e 60000 ms."
+        )
 
     return RuntimeSettings(
         fullscreen=bool(namespace.fullscreen),
@@ -105,5 +125,7 @@ def parse_runtime_settings(argv: Sequence[str] | None = None) -> RuntimeSettings
         recording_queue_capacity=int(namespace.recording_queue_capacity),
         recording_batch_size=int(namespace.recording_batch_size),
         recording_flush_interval_ms=int(namespace.recording_flush_interval_ms),
+        minimum_free_disk_mb=int(namespace.minimum_free_disk_mb),
+        operational_update_interval_ms=int(namespace.operational_update_interval_ms),
         conversion_profiles_path=Path(namespace.conversion_profiles),
     )

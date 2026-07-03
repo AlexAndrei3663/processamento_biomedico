@@ -8,7 +8,15 @@ from PyQt5.QtGui import QCloseEvent, QKeyEvent
 from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
 from serial_monitor.app.runtime_settings import RuntimeSettings
-from serial_monitor.domain.models import ConversionProfile, ProcessedAcquisitionSnapshot, RecordingStatus, SessionConfig, StoredSessionSummary
+from serial_monitor.domain.models import (
+    CommunicationStats,
+    ConversionProfile,
+    ProcessedAcquisitionSnapshot,
+    RecordingStatus,
+    SessionConfig,
+    StoredSessionSummary,
+    SystemResourceSnapshot,
+)
 from serial_monitor.domain.enums import WindowPageIndex
 from serial_monitor.infrastructure.storage.config_repository import SessionPreset
 from serial_monitor.ui.pages.config_page import ConfigPage
@@ -190,6 +198,21 @@ class MainWindow(QMainWindow):
 
     def update_recording_status(self, status: RecordingStatus) -> None:
         self.live_page.update_recording_status(status)
+
+    def update_operational_status(
+        self,
+        communication: CommunicationStats,
+        resources: SystemResourceSnapshot,
+        *,
+        crc_available: bool,
+        minimum_free_disk_bytes: int,
+    ) -> None:
+        self.live_page.update_operational_status(
+            communication,
+            resources,
+            crc_available=crc_available,
+            minimum_free_disk_bytes=minimum_free_disk_bytes,
+        )
 
     def update_connection_state(self, connected: bool) -> None:
         self.live_page.connect_button.setEnabled(not connected)

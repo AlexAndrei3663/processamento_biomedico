@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import shutil
 import threading
 import time
 from datetime import datetime
@@ -35,11 +36,13 @@ class RecordingService:
         queue_capacity: int = 8192,
         batch_size: int = 256,
         flush_interval_s: float = 1.0,
+        minimum_free_disk_bytes: int = 256 * 1024 * 1024,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.queue_capacity = max(1, int(queue_capacity))
         self.batch_size = max(1, int(batch_size))
         self.flush_interval_s = max(0.05, float(flush_interval_s))
+        self.minimum_free_disk_bytes = max(0, int(minimum_free_disk_bytes))
 
         self._lock = threading.RLock()
         self._queue: queue.Queue[SampleFrame] = queue.Queue(maxsize=self.queue_capacity)
@@ -57,6 +60,7 @@ class RecordingService:
         self._ended_at: datetime | None = None
         self._frames_enqueued = 0
         self._frames_written = 0
+        self._queue_high_watermark = 0
         self._output_path: Path | None = None
         self._partial_path: Path | None = None
         self._error_message: str | None = None
@@ -78,6 +82,7 @@ class RecordingService:
         active_filters: Dict[int, List[str]] | None = None,
         communication_baseline: CommunicationStats | None = None,
     ) -> RecordingStatus:
+        self._ensure_disk_space_available()
         with self._lock:
             if self._state in {RecordingState.RECORDING, RecordingState.FINALIZING}:
                 raise RuntimeError("Já existe uma gravação ativa.")
@@ -93,6 +98,7 @@ class RecordingService:
             self._ended_at = None
             self._frames_enqueued = 0
             self._frames_written = 0
+            self._queue_high_watermark = 0
             self._output_path = None
             self._error_message = None
 
@@ -134,6 +140,9 @@ class RecordingService:
 
         with self._lock:
             self._frames_enqueued += 1
+            self._queue_high_watermark = max(
+                self._queue_high_watermark, self._queue.qsize()
+            )
 
     def finalize(
         self,
@@ -219,6 +228,7 @@ class RecordingService:
             )
             frames_enqueued = self._frames_enqueued
             frames_written = self._frames_written
+            queue_high_watermark = self._queue_high_watermark
             error_message = self._error_message
             end_reason = self._end_reason if self._started_at is not None else None
 
@@ -238,12 +248,34 @@ class RecordingService:
             frames_written=frames_written,
             queue_size=self._queue.qsize(),
             queue_capacity=self.queue_capacity,
+            queue_high_watermark=queue_high_watermark,
             file_size_bytes=file_size,
             output_path=output_path,
             partial_path=partial_path,
             end_reason=end_reason,
             error_message=error_message,
         )
+
+    def _ensure_disk_space_available(self) -> None:
+        if self.minimum_free_disk_bytes <= 0:
+            return
+        path = self.base_dir.expanduser()
+        while not path.exists() and path.parent != path:
+            path = path.parent
+        try:
+            free = int(shutil.disk_usage(path).free)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Não foi possível verificar o espaço livre em disco: {exc}"
+            ) from exc
+        if free < self.minimum_free_disk_bytes:
+            required_mib = self.minimum_free_disk_bytes / (1024 * 1024)
+            available_mib = free / (1024 * 1024)
+            raise RuntimeError(
+                "Espaço livre insuficiente para iniciar a gravação: "
+                f"{available_mib:.1f} MiB disponíveis; mínimo configurado "
+                f"de {required_mib:.1f} MiB."
+            )
 
     def _communication_delta(self, current: CommunicationStats) -> CommunicationStats:
         baseline = self._communication_baseline

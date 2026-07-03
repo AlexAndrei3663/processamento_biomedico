@@ -325,6 +325,7 @@ class RecordingStatus:
     frames_written: int = 0
     queue_size: int = 0
     queue_capacity: int = 0
+    queue_high_watermark: int = 0
     file_size_bytes: int = 0
     output_path: Path | None = None
     partial_path: Path | None = None
@@ -334,6 +335,25 @@ class RecordingStatus:
     @property
     def is_active(self) -> bool:
         return self.state in {RecordingState.RECORDING, RecordingState.FINALIZING}
+
+
+@dataclass(frozen=True, slots=True)
+class SystemResourceSnapshot:
+    """Amostra leve dos recursos usados no diagnóstico operacional."""
+
+    captured_at: str
+    disk_free_bytes: int
+    disk_total_bytes: int
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    temperature_c: float | None = None
+
+    @property
+    def disk_used_percent(self) -> float | None:
+        if self.disk_total_bytes <= 0:
+            return None
+        used = max(0, self.disk_total_bytes - self.disk_free_bytes)
+        return 100.0 * used / self.disk_total_bytes
 
 
 @dataclass(frozen=True, slots=True)

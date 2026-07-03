@@ -39,7 +39,7 @@ class SessionRepository:
     DATA_SUFFIX = ".h5"
     PARTIAL_SUFFIX = ".partial.h5"
     FORMAT_VERSION = Hdf5SessionWriter.FORMAT_VERSION
-    SUPPORTED_FORMAT_VERSIONS = {4, 5, 6}
+    SUPPORTED_FORMAT_VERSIONS = {4, 5, 6, 7}
 
     def __init__(self, base_dir: str | Path = "data/sessions") -> None:
         self.base_dir = Path(base_dir)

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import argparse
 import tempfile
+import sys
 from pathlib import Path
 from time import perf_counter
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from serial_monitor.application.recording_service import RecordingService
 from serial_monitor.application.session_service import SessionService
