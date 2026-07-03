@@ -292,7 +292,11 @@ class LivePage(QWidget):
         self.signal_tabs.clear()
 
         for channel in session.channels:
-            tab = SignalTab(channel, max_plot_points=self.max_plot_points)
+            tab = SignalTab(
+                channel,
+                max_plot_points=self.max_plot_points,
+                adc=session.adc,
+            )
             tab.filter_toggled.connect(self.filter_toggled.emit)
             tab.display_mode_changed.connect(self.display_mode_changed.emit)
             tab.plot_domain_changed.connect(self.plot_domain_changed.emit)

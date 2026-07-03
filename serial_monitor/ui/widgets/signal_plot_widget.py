@@ -11,6 +11,9 @@ from serial_monitor.domain.models import SignalChannelConfig, SpectrumSnapshot
 class SignalPlotWidget(QWidget):
     """Gráfico leve com pan e zoom somente no eixo horizontal."""
 
+    VERTICAL_AUTO = "auto"
+    VERTICAL_FULL_SCALE = "full_scale"
+
     follow_mode_changed = pyqtSignal(bool)
 
     def __init__(
@@ -31,6 +34,8 @@ class SignalPlotWidget(QWidget):
         self._range_initialized = False
         self._last_x: np.ndarray = np.array([], dtype=float)
         self._last_y: np.ndarray = np.array([], dtype=float)
+        self._vertical_scale_mode = self.VERTICAL_AUTO
+        self._fixed_y_range: tuple[float, float] | None = None
 
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -96,6 +101,36 @@ class SignalPlotWidget(QWidget):
 
         self.set_follow_latest(False)
         self._set_x_range(left, right)
+
+    def set_vertical_scale_mode(
+        self,
+        mode: str,
+        fixed_range: tuple[float, float] | None = None,
+    ) -> None:
+        """Seleciona escala Y automática ou faixa física completa do ADC.
+
+        A faixa fixa só é aplicada ao domínio temporal. O espectro permanece
+        com ajuste vertical automático, pois sua faixa depende da escala linear
+        ou dBFS selecionada.
+        """
+
+        if mode not in (self.VERTICAL_AUTO, self.VERTICAL_FULL_SCALE):
+            raise ValueError(f"Modo de escala vertical desconhecido: {mode}")
+        normalized_range: tuple[float, float] | None = None
+        if fixed_range is not None:
+            lower, upper = (float(fixed_range[0]), float(fixed_range[1]))
+            if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
+                raise ValueError("A faixa vertical fixa deve ser finita e crescente.")
+            normalized_range = (lower, upper)
+
+        changed = (
+            mode != self._vertical_scale_mode
+            or normalized_range != self._fixed_y_range
+        )
+        self._vertical_scale_mode = mode
+        self._fixed_y_range = normalized_range
+        if changed:
+            self._apply_navigation_limits(self._last_x, self._last_y)
 
     def set_max_plot_points(self, max_plot_points: int) -> None:
         self.max_plot_points = max(100, int(max_plot_points))
@@ -219,8 +254,19 @@ class SignalPlotWidget(QWidget):
 
         data_y_min = float(np.min(finite_y))
         data_y_max = float(np.max(finite_y))
-        y_min = min(0.0, data_y_min)
-        y_max = max(0.0, data_y_max)
+        use_full_scale = (
+            self._current_domain == "time"
+            and self._vertical_scale_mode == self.VERTICAL_FULL_SCALE
+            and self._fixed_y_range is not None
+        )
+        if use_full_scale:
+            y_min, y_max = self._fixed_y_range
+        elif self._current_domain == "spectrum" and self._current_y_unit == "dBFS":
+            y_min = min(-20.0, data_y_min)
+            y_max = max(0.0, data_y_max)
+        else:
+            y_min = min(0.0, data_y_min)
+            y_max = max(0.0, data_y_max)
         if y_max <= y_min:
             y_max = y_min + 1.0
         y_span = y_max - y_min

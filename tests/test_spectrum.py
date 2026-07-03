@@ -6,7 +6,10 @@ from serial_monitor.application.live_acquisition_service import LiveAcquisitionS
 from serial_monitor.application.session_service import SessionService
 from serial_monitor.infrastructure.serial.protocol import FrameCsvParser
 from serial_monitor.processing.filter_pipeline import ProcessingService
-from serial_monitor.processing.spectrum import calculate_single_sided_spectrum
+from serial_monitor.processing.spectrum import (
+    calculate_single_sided_spectrum,
+    convert_spectrum_to_dbfs,
+)
 
 
 def test_single_sided_spectrum_detects_dominant_frequency() -> None:
@@ -54,3 +57,31 @@ def test_processing_snapshot_contains_raw_and_processed_spectra() -> None:
     assert channel_snapshot.raw_spectrum.frequencies_hz.size > 0
     assert channel_snapshot.processed_spectrum.frequencies_hz.size > 0
     assert channel_snapshot.raw_spectrum.magnitudes.size == channel_snapshot.processed_spectrum.magnitudes.size
+
+
+def test_dbfs_display_conversion_reuses_linear_spectrum() -> None:
+    sample_rate_hz = 1000.0
+    t = np.arange(1000, dtype=float) / sample_rate_hz
+    values = 0.5 * np.sin(2 * np.pi * 20.0 * t)
+    linear = calculate_single_sided_spectrum(values, sample_rate_hz)
+
+    dbfs = convert_spectrum_to_dbfs(linear, reference_amplitude=1.0)
+
+    assert np.array_equal(dbfs.frequencies_hz, linear.frequencies_hz)
+    assert dbfs.resolution_hz == linear.resolution_hz
+    assert dbfs.peak_frequency_hz == linear.peak_frequency_hz
+    assert dbfs.peak_magnitude is not None
+    assert abs(dbfs.peak_magnitude - 20.0 * np.log10(0.5)) < 0.2
+    assert np.all(np.isfinite(dbfs.magnitudes))
+    assert np.min(dbfs.magnitudes) >= -160.0
+
+
+def test_dbfs_conversion_rejects_non_positive_reference() -> None:
+    spectrum = calculate_single_sided_spectrum(np.array([0.0, 1.0]), 1000.0)
+
+    try:
+        convert_spectrum_to_dbfs(spectrum, reference_amplitude=0.0)
+    except ValueError as exc:
+        assert "referência" in str(exc)
+    else:
+        raise AssertionError("Era esperado ValueError para referência não positiva.")

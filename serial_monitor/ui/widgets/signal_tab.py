@@ -19,8 +19,14 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from serial_monitor.domain.models import ProcessedChannelSnapshot, SignalChannelConfig
+from serial_monitor.domain.models import (
+    AdcConfig,
+    ProcessedChannelSnapshot,
+    SignalChannelConfig,
+    SpectrumSnapshot,
+)
 from serial_monitor.processing.filter_pipeline import FILTER_DEFINITIONS
+from serial_monitor.processing.spectrum import convert_spectrum_to_dbfs
 from serial_monitor.ui.widgets.signal_plot_widget import SignalPlotWidget
 
 
@@ -35,12 +41,24 @@ class SignalTab(QWidget):
     PROCESSED_MODE = "processed"
     TIME_DOMAIN = "time"
     SPECTRUM_DOMAIN = "spectrum"
+    VERTICAL_AUTO = "auto"
+    VERTICAL_FULL_SCALE = "full_scale"
+    SPECTRUM_LINEAR = "linear"
+    SPECTRUM_DBFS = "dbfs"
 
-    def __init__(self, channel: SignalChannelConfig, max_plot_points: int = 5000) -> None:
+    def __init__(
+        self,
+        channel: SignalChannelConfig,
+        max_plot_points: int = 5000,
+        adc: AdcConfig | None = None,
+    ) -> None:
         super().__init__()
         self.channel = channel
         self.display_mode = self.BASE_MODE
         self.plot_domain = self.TIME_DOMAIN
+        self.vertical_scale_mode = self.VERTICAL_AUTO
+        self.spectrum_scale = self.SPECTRUM_LINEAR
+        self.adc = adc or AdcConfig()
         self._last_snapshot: ProcessedChannelSnapshot | None = None
         self._plot_focused = False
         self._fullscreen_mode = False
@@ -64,10 +82,14 @@ class SignalTab(QWidget):
         self.compact_channel_label = QLabel(f"ch{channel.index} — {channel.display_name}")
         self.compact_channel_label.setStyleSheet("font-weight: 600;")
         self.zoom_out_button = QPushButton("−")
-        self.zoom_out_button.setMaximumWidth(52)
+        self.zoom_out_button.setMinimumSize(58, 40)
+        self.zoom_out_button.setMaximumWidth(64)
+        self.zoom_out_button.setStyleSheet("font-size: 20px; font-weight: 700;")
         self.zoom_out_button.setToolTip("Reduz o zoom horizontal.")
         self.zoom_in_button = QPushButton("+")
-        self.zoom_in_button.setMaximumWidth(52)
+        self.zoom_in_button.setMinimumSize(58, 40)
+        self.zoom_in_button.setMaximumWidth(64)
+        self.zoom_in_button.setStyleSheet("font-size: 20px; font-weight: 700;")
         self.zoom_in_button.setToolTip("Amplia o zoom horizontal.")
         self.follow_signal_button = QPushButton("Seguir")
         self.follow_signal_button.setCheckable(True)
@@ -175,6 +197,37 @@ class SignalTab(QWidget):
         domain_layout.addWidget(self.toggle_spectrum_button)
         side_layout.addWidget(domain_group)
 
+        self.vertical_scale_group = QGroupBox("Escala vertical no tempo")
+        vertical_scale_layout = QVBoxLayout(self.vertical_scale_group)
+        self.vertical_auto_radio = QRadioButton("Automática")
+        self.vertical_full_scale_radio = QRadioButton("Faixa completa do ADC")
+        self.vertical_auto_radio.setChecked(True)
+        self.vertical_scale_button_group = QButtonGroup(self)
+        self.vertical_scale_button_group.addButton(self.vertical_auto_radio)
+        self.vertical_scale_button_group.addButton(self.vertical_full_scale_radio)
+        self.vertical_full_scale_radio.setToolTip(
+            "Fixa o eixo Y entre os limites teóricos do ADS1256 para o ganho global."
+        )
+        vertical_scale_layout.addWidget(self.vertical_auto_radio)
+        vertical_scale_layout.addWidget(self.vertical_full_scale_radio)
+        side_layout.addWidget(self.vertical_scale_group)
+
+        self.spectrum_scale_group = QGroupBox("Escala do espectro")
+        spectrum_scale_layout = QVBoxLayout(self.spectrum_scale_group)
+        self.spectrum_linear_radio = QRadioButton("Magnitude linear")
+        self.spectrum_dbfs_radio = QRadioButton("dBFS")
+        self.spectrum_linear_radio.setChecked(True)
+        self.spectrum_scale_button_group = QButtonGroup(self)
+        self.spectrum_scale_button_group.addButton(self.spectrum_linear_radio)
+        self.spectrum_scale_button_group.addButton(self.spectrum_dbfs_radio)
+        self.spectrum_dbfs_radio.setToolTip(
+            "Mostra 20·log10(magnitude/escala completa do ADC), sem recalcular a FFT."
+        )
+        spectrum_scale_layout.addWidget(self.spectrum_linear_radio)
+        spectrum_scale_layout.addWidget(self.spectrum_dbfs_radio)
+        self.spectrum_scale_group.setEnabled(False)
+        side_layout.addWidget(self.spectrum_scale_group)
+
         filter_group = QGroupBox("Filtros pré-definidos")
         filter_layout = QVBoxLayout(filter_group)
         if channel.default_filters:
@@ -239,6 +292,10 @@ class SignalTab(QWidget):
         self.processed_radio.toggled.connect(self._on_display_mode_toggled)
         self.time_radio.toggled.connect(self._on_plot_domain_toggled)
         self.spectrum_radio.toggled.connect(self._on_plot_domain_toggled)
+        self.vertical_auto_radio.toggled.connect(self._on_vertical_scale_toggled)
+        self.vertical_full_scale_radio.toggled.connect(self._on_vertical_scale_toggled)
+        self.spectrum_linear_radio.toggled.connect(self._on_spectrum_scale_toggled)
+        self.spectrum_dbfs_radio.toggled.connect(self._on_spectrum_scale_toggled)
         self.toggle_spectrum_button.clicked.connect(self._toggle_spectrum)
         self.focus_plot_button.toggled.connect(self.set_plot_focused)
         self.zoom_in_button.clicked.connect(lambda: self.plot.zoom_horizontal(0.70))
@@ -258,6 +315,40 @@ class SignalTab(QWidget):
         self.follow_signal_button.blockSignals(True)
         self.follow_signal_button.setChecked(enabled)
         self.follow_signal_button.blockSignals(False)
+
+    def _time_full_scale_range(self) -> tuple[float, float]:
+        if self.channel.conversion_enabled:
+            full_scale = float(self.adc.full_scale_voltage_v)
+            return (-full_scale, full_scale)
+        return (-8388608.0, 8388607.0)
+
+    def _spectrum_reference_amplitude(self) -> float:
+        if self.channel.conversion_enabled:
+            return float(self.adc.full_scale_voltage_v)
+        return 8388607.0
+
+    def _on_vertical_scale_toggled(self) -> None:
+        mode = (
+            self.VERTICAL_FULL_SCALE
+            if self.vertical_full_scale_radio.isChecked()
+            else self.VERTICAL_AUTO
+        )
+        if mode == self.vertical_scale_mode:
+            return
+        self.vertical_scale_mode = mode
+        self.plot.set_vertical_scale_mode(mode, self._time_full_scale_range())
+        self._redraw_last_snapshot()
+
+    def _on_spectrum_scale_toggled(self) -> None:
+        scale = (
+            self.SPECTRUM_DBFS
+            if self.spectrum_dbfs_radio.isChecked()
+            else self.SPECTRUM_LINEAR
+        )
+        if scale == self.spectrum_scale:
+            return
+        self.spectrum_scale = scale
+        self._redraw_last_snapshot()
 
     def set_plot_focused(self, focused: bool) -> None:
         focused = bool(focused)
@@ -296,7 +387,10 @@ class SignalTab(QWidget):
         if domain == self.plot_domain:
             return
         self.plot_domain = domain
-        self.follow_signal_button.setVisible(domain == self.TIME_DOMAIN)
+        is_time = domain == self.TIME_DOMAIN
+        self.follow_signal_button.setVisible(is_time)
+        self.vertical_scale_group.setEnabled(is_time)
+        self.spectrum_scale_group.setEnabled(not is_time)
         self.toggle_spectrum_button.setText(
             "Mostrar tempo" if domain == self.SPECTRUM_DOMAIN else "Mostrar espectro"
         )
@@ -365,20 +459,37 @@ class SignalTab(QWidget):
             return snapshot.processed_values, snapshot.base_unit, "processado"
         return snapshot.base_values, snapshot.base_unit, "base"
 
-    def _selected_spectrum(self, snapshot: ProcessedChannelSnapshot):
+    def _selected_spectrum(self, snapshot: ProcessedChannelSnapshot) -> SpectrumSnapshot:
         return (
             snapshot.processed_spectrum
             if self.display_mode == self.PROCESSED_MODE
             else snapshot.base_spectrum
         )
 
+    def _display_spectrum(self, snapshot: ProcessedChannelSnapshot) -> SpectrumSnapshot:
+        spectrum = self._selected_spectrum(snapshot)
+        if self.spectrum_scale == self.SPECTRUM_DBFS:
+            return convert_spectrum_to_dbfs(
+                spectrum,
+                self._spectrum_reference_amplitude(),
+            )
+        return spectrum
+
     def _draw_snapshot(self, snapshot: ProcessedChannelSnapshot) -> None:
         values, unit, label = self._selected_values(snapshot)
         if self.plot_domain == self.SPECTRUM_DOMAIN:
+            spectrum_unit = "dBFS" if self.spectrum_scale == self.SPECTRUM_DBFS else unit
+            scale_label = "dBFS" if self.spectrum_scale == self.SPECTRUM_DBFS else "linear"
             self.plot.set_spectrum(
-                self._selected_spectrum(snapshot), f"espectro {label}", unit=unit
+                self._display_spectrum(snapshot),
+                f"espectro {label} — {scale_label}",
+                unit=spectrum_unit,
             )
         else:
+            self.plot.set_vertical_scale_mode(
+                self.vertical_scale_mode,
+                self._time_full_scale_range(),
+            )
             self.plot.set_time_series(snapshot.x_seconds, values, label, unit=unit)
 
     def _update_metrics(self, snapshot: ProcessedChannelSnapshot) -> None:
@@ -390,17 +501,22 @@ class SignalTab(QWidget):
         self.max_label.setText("Máximo: --" if metrics.maximum is None else f"Máximo: {metrics.maximum:g} {unit}")
 
     def _update_spectrum_info(self, snapshot: ProcessedChannelSnapshot) -> None:
-        spectrum = self._selected_spectrum(snapshot)
+        spectrum = self._display_spectrum(snapshot)
         if spectrum.peak_frequency_hz is None:
             self.peak_frequency_label.setText("Pico: --")
             self.peak_magnitude_label.setText("Magnitude do pico: --")
             self.resolution_label.setText("Resolução: --")
             return
         self.peak_frequency_label.setText(f"Pico: {spectrum.peak_frequency_hz:g} Hz")
+        magnitude_unit = (
+            "dBFS"
+            if self.spectrum_scale == self.SPECTRUM_DBFS
+            else snapshot.base_unit
+        )
         self.peak_magnitude_label.setText(
             "Magnitude do pico: --"
             if spectrum.peak_magnitude is None
-            else f"Magnitude do pico: {spectrum.peak_magnitude:g} {snapshot.base_unit}"
+            else f"Magnitude do pico: {spectrum.peak_magnitude:g} {magnitude_unit}"
         )
         self.resolution_label.setText(
             "Resolução: --"

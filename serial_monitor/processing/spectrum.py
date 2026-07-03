@@ -77,3 +77,47 @@ def calculate_single_sided_spectrum(
         peak_magnitude=peak_magnitude,
         resolution_hz=resolution_hz,
     )
+
+
+def convert_spectrum_to_dbfs(
+    spectrum: SpectrumSnapshot,
+    reference_amplitude: float,
+    *,
+    floor_db: float = -160.0,
+) -> SpectrumSnapshot:
+    """Converte somente a escala de exibição de magnitude para dBFS.
+
+    A FFT não é recalculada. ``reference_amplitude`` representa a amplitude
+    de escala completa positiva do ADC na unidade base exibida (counts ou V).
+    Valores nulos são limitados por ``floor_db`` para evitar ``-inf``.
+    """
+
+    if reference_amplitude <= 0:
+        raise ValueError("A referência de dBFS deve ser maior que zero.")
+
+    magnitudes = np.asarray(spectrum.magnitudes, dtype=float)
+    if magnitudes.size == 0:
+        return _empty_spectrum()
+
+    safe_ratio = np.maximum(
+        np.abs(magnitudes) / float(reference_amplitude),
+        np.finfo(float).tiny,
+    )
+    dbfs = 20.0 * np.log10(safe_ratio)
+    dbfs = np.maximum(dbfs, float(floor_db))
+
+    peak_magnitude: float | None = None
+    if spectrum.peak_magnitude is not None:
+        peak_ratio = max(
+            abs(float(spectrum.peak_magnitude)) / float(reference_amplitude),
+            np.finfo(float).tiny,
+        )
+        peak_magnitude = max(20.0 * float(np.log10(peak_ratio)), float(floor_db))
+
+    return SpectrumSnapshot(
+        frequencies_hz=np.asarray(spectrum.frequencies_hz, dtype=float),
+        magnitudes=dbfs,
+        peak_frequency_hz=spectrum.peak_frequency_hz,
+        peak_magnitude=peak_magnitude,
+        resolution_hz=spectrum.resolution_hz,
+    )

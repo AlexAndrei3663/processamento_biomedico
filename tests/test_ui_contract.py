@@ -167,3 +167,24 @@ def test_new_validation_disconnects_current_serial_first() -> None:
     assert "request_session_validation" in controller_source
     assert "self._pending_session_validation = True" in controller_source
     assert "QTimer.singleShot(0, self.validate_session)" in controller_source
+
+
+def test_plot_exposes_touch_zoom_vertical_range_and_dbfs_controls() -> None:
+    tab_source = (ROOT / "serial_monitor/ui/widgets/signal_tab.py").read_text(
+        encoding="utf-8"
+    )
+    plot_source = (
+        ROOT / "serial_monitor/ui/widgets/signal_plot_widget.py"
+    ).read_text(encoding="utf-8")
+    spectrum_source = (
+        ROOT / "serial_monitor/processing/spectrum.py"
+    ).read_text(encoding="utf-8")
+
+    assert "setMinimumSize(58, 40)" in tab_source
+    assert "vertical_auto_radio" in tab_source
+    assert "vertical_full_scale_radio" in tab_source
+    assert "spectrum_linear_radio" in tab_source
+    assert "spectrum_dbfs_radio" in tab_source
+    assert "set_vertical_scale_mode" in plot_source
+    assert "convert_spectrum_to_dbfs" in spectrum_source
+    assert "np.fft" not in tab_source

@@ -553,3 +553,23 @@ O diretório `data/` é ignorado pelo Git por padrão.
 ## Licença e uso
 
 O repositório ainda não contém um arquivo de licença. Até que uma licença seja definida, o uso, redistribuição e incorporação em outros projetos devem ser autorizados pelos autores.
+
+
+### Escalas e navegação do gráfico
+
+Na aba de cada canal, os botões **+** e **−** controlam somente o zoom
+horizontal. O botão **Seguir** retorna a janela ao timestamp mais recente.
+
+No domínio do tempo há duas escalas verticais:
+
+- **Automática**: acompanha a amplitude presente na janela exibida;
+- **Faixa completa do ADC**: fixa o eixo entre os limites teóricos do ADS1256.
+  Para contagens, a faixa é `-8388608` a `8388607`. Para tensão, a faixa é
+  `±(2 × VREF / PGA)`.
+
+No espectro há duas escalas de magnitude:
+
+- **Magnitude linear**: mantém a apresentação original na unidade do sinal;
+- **dBFS**: usa `20·log10(magnitude/escala_completa)` e piso visual de
+  `-160 dBFS`. A troca de escala não recalcula a FFT; apenas transforma o
+  vetor de magnitude já calculado para a aba visível.
