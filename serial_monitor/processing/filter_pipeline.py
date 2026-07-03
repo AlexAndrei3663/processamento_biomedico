@@ -14,6 +14,7 @@ from serial_monitor.domain.models import (
     ProcessedAcquisitionSnapshot,
     ProcessedChannelSnapshot,
     SessionConfig,
+    SpectrumSnapshot,
     SignalChannelConfig,
     FilterDefinition,
 )
@@ -331,10 +332,34 @@ class ProcessingService:
     def active_filters_for(self, channel_index: int) -> List[str]:
         return sorted(self._enabled_filters.get(channel_index, set()))
 
-    def process(self, snapshot: AcquisitionSnapshot) -> ProcessedAcquisitionSnapshot:
+    def process(
+        self,
+        snapshot: AcquisitionSnapshot,
+        *,
+        channel_indexes: set[int] | None = None,
+        spectrum_modes: Dict[int, str] | None = None,
+    ) -> ProcessedAcquisitionSnapshot:
+        """Gera apenas os canais e espectros necessários para a tela atual.
+
+        ``channel_indexes=None`` mantém o comportamento completo usado por testes
+        e rotinas offline. Na interface ao vivo, somente a aba visível é processada.
+        ``spectrum_modes`` aceita ``base`` ou ``processed`` por canal; um dicionário
+        vazio desabilita FFT durante a visualização temporal.
+        """
+
         processed_channels: Dict[int, ProcessedChannelSnapshot] = {}
+        selected_indexes = (
+            set(snapshot.channels) if channel_indexes is None else set(channel_indexes)
+        )
+
+        def empty_spectrum() -> SpectrumSnapshot:
+            empty = np.array([], dtype=float)
+            return SpectrumSnapshot(empty, empty)
 
         for index, channel_snapshot in snapshot.channels.items():
+            if index not in selected_indexes:
+                continue
+
             active_filters = self.active_filters_for(index)
             conversion = self.conversion_service.convert(
                 channel_snapshot.values,
@@ -353,18 +378,37 @@ class ProcessingService:
                 float(processed_values[-1]) if processed_values.size else None
             )
 
-            raw_spectrum = calculate_single_sided_spectrum(
-                channel_snapshot.values,
-                channel_snapshot.channel.sample_rate_hz,
+            raw_spectrum = empty_spectrum()
+            converted_spectrum = empty_spectrum()
+            processed_spectrum = empty_spectrum()
+            requested_mode = (
+                None if spectrum_modes is None else spectrum_modes.get(index)
             )
-            converted_spectrum = calculate_single_sided_spectrum(
-                conversion.values,
-                channel_snapshot.channel.sample_rate_hz,
-            )
-            processed_spectrum = calculate_single_sided_spectrum(
-                processed_values,
-                channel_snapshot.channel.sample_rate_hz,
-            )
+
+            if spectrum_modes is None:
+                # Caminho completo para processamento offline e validação.
+                raw_spectrum = calculate_single_sided_spectrum(
+                    channel_snapshot.values,
+                    channel_snapshot.channel.sample_rate_hz,
+                )
+                converted_spectrum = calculate_single_sided_spectrum(
+                    conversion.values,
+                    channel_snapshot.channel.sample_rate_hz,
+                )
+                processed_spectrum = calculate_single_sided_spectrum(
+                    processed_values,
+                    channel_snapshot.channel.sample_rate_hz,
+                )
+            elif requested_mode == "base":
+                converted_spectrum = calculate_single_sided_spectrum(
+                    conversion.values,
+                    channel_snapshot.channel.sample_rate_hz,
+                )
+            elif requested_mode == "processed":
+                processed_spectrum = calculate_single_sided_spectrum(
+                    processed_values,
+                    channel_snapshot.channel.sample_rate_hz,
+                )
 
             processed_channels[index] = ProcessedChannelSnapshot(
                 channel=channel_snapshot.channel,

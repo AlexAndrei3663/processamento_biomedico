@@ -180,8 +180,11 @@ class CommunicationMonitor:
         self._sequence_tracker.reset_baseline()
         self._last_timestamp_us = None
 
-    def record_invalid_frame(self) -> None:
-        self._invalid_frames += 1
+    def record_invalid_frame(self, count: int = 1) -> None:
+        count = int(count)
+        if count <= 0:
+            return
+        self._invalid_frames += count
 
     def record_checksum_error(self) -> None:
         self._checksum_errors += 1

@@ -125,6 +125,23 @@ class ConversionService:
                 raise ValueError("Os valores de entrada da tabela devem ser estritamente crescentes.")
             return np.interp(values, x, y)
 
+        if model == ConversionModel.ADS1256_DIFFERENTIAL:
+            reference_voltage_v = self._required_float(
+                parameters, "reference_voltage_v"
+            )
+            gain = int(self._required_float(parameters, "gain"))
+            if reference_voltage_v <= 0:
+                raise ValueError("A tensão de referência do ADS1256 deve ser positiva.")
+            if gain not in (1, 2, 4, 8, 16, 32, 64):
+                raise ValueError("Ganho inválido para o ADS1256.")
+
+            full_scale = 2.0 * reference_voltage_v / gain
+            result = np.empty_like(values, dtype=float)
+            positive = values >= 0
+            result[positive] = values[positive] * full_scale / 8_388_607.0
+            result[~positive] = values[~positive] * full_scale / 8_388_608.0
+            return result
+
         raise ValueError(f"Modelo de conversão não implementado: {model.value}")
 
     @staticmethod

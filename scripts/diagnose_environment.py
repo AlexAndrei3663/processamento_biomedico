@@ -28,12 +28,21 @@ def main() -> int:
             status = 1
 
     print()
-    profiles_path = Path("config/conversion_profiles.json")
-    if profiles_path.exists():
-        print(f"[OK] Perfis de conversão: {profiles_path}")
+    validation_plan = Path("config/validation_plan.json")
+    if validation_plan.exists():
+        print(f"[OK] Plano de validação: {validation_plan}")
     else:
-        print(f"[ERRO] Perfis de conversão ausentes: {profiles_path}")
+        print(f"[ERRO] Plano de validação ausente: {validation_plan}")
         status = 1
+
+    legacy_profiles = Path("config/conversion_profiles.json")
+    if legacy_profiles.exists():
+        print(f"[OK] Perfis legados para validação: {legacy_profiles}")
+    else:
+        print(
+            "[AVISO] Perfis legados ausentes; a aplicação gráfica funciona, "
+            "mas alguns ensaios de compatibilidade podem não executar."
+        )
 
     print()
     print("Portas seriais detectadas:")

@@ -19,29 +19,19 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from serial_monitor.domain.models import (
-    ProcessedChannelSnapshot,
-    SignalChannelConfig,
-    SpectrumSnapshot,
-)
+from serial_monitor.domain.models import ProcessedChannelSnapshot, SignalChannelConfig
 from serial_monitor.processing.filter_pipeline import FILTER_DEFINITIONS
 from serial_monitor.ui.widgets.signal_plot_widget import SignalPlotWidget
 
 
 class SignalTab(QWidget):
-    """Aba de visualização do bruto, convertido, processado e espectro.
-
-    O gráfico e o painel lateral são separados por um ``QSplitter``. O painel
-    de controles possui rolagem própria, portanto seu conteúdo nunca força a
-    aba a ultrapassar as dimensões da tela. O modo de foco oculta o painel e
-    entrega toda a área disponível ao gráfico.
-    """
+    """Aba de um canal com sinal base, processado e navegação horizontal."""
 
     filter_toggled = pyqtSignal(int, str, bool)
     display_mode_changed = pyqtSignal(int, str)
+    plot_domain_changed = pyqtSignal(int, str)
 
-    RAW_MODE = "raw"
-    CONVERTED_MODE = "converted"
+    BASE_MODE = "base"
     PROCESSED_MODE = "processed"
     TIME_DOMAIN = "time"
     SPECTRUM_DOMAIN = "spectrum"
@@ -49,7 +39,7 @@ class SignalTab(QWidget):
     def __init__(self, channel: SignalChannelConfig, max_plot_points: int = 5000) -> None:
         super().__init__()
         self.channel = channel
-        self.display_mode = self.RAW_MODE
+        self.display_mode = self.BASE_MODE
         self.plot_domain = self.TIME_DOMAIN
         self._last_snapshot: ProcessedChannelSnapshot | None = None
         self._plot_focused = False
@@ -60,7 +50,6 @@ class SignalTab(QWidget):
 
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(4)
@@ -72,18 +61,30 @@ class SignalTab(QWidget):
         toolbar.setContentsMargins(2, 0, 2, 0)
         toolbar.setSpacing(4)
 
-        self.compact_channel_label = QLabel(
-            f"ch{channel.index} — {channel.display_name}"
-        )
+        self.compact_channel_label = QLabel(f"ch{channel.index} — {channel.display_name}")
         self.compact_channel_label.setStyleSheet("font-weight: 600;")
+        self.zoom_out_button = QPushButton("−")
+        self.zoom_out_button.setMaximumWidth(52)
+        self.zoom_out_button.setToolTip("Reduz o zoom horizontal.")
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_in_button.setMaximumWidth(52)
+        self.zoom_in_button.setToolTip("Amplia o zoom horizontal.")
+        self.follow_signal_button = QPushButton("Seguir")
+        self.follow_signal_button.setCheckable(True)
+        self.follow_signal_button.setChecked(True)
+        self.follow_signal_button.setMaximumWidth(110)
+        self.follow_signal_button.setToolTip(
+            "Mantém a janela temporal acompanhando o timestamp mais recente."
+        )
         self.focus_plot_button = QPushButton("Focar")
         self.focus_plot_button.setCheckable(True)
-        self.focus_plot_button.setMaximumWidth(150)
-        self.focus_plot_button.setToolTip(
-            "Oculta ou restaura o painel lateral para ampliar o gráfico."
-        )
+        self.focus_plot_button.setMaximumWidth(120)
+
         toolbar.addWidget(self.compact_channel_label)
         toolbar.addStretch(1)
+        toolbar.addWidget(self.zoom_out_button)
+        toolbar.addWidget(self.zoom_in_button)
+        toolbar.addWidget(self.follow_signal_button)
         toolbar.addWidget(self.focus_plot_button)
         root.addWidget(self.toolbar_widget)
 
@@ -92,27 +93,18 @@ class SignalTab(QWidget):
         self.splitter.setHandleWidth(5)
         self.splitter.setMinimumSize(0, 0)
         self.splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        self.plot.setMinimumSize(0, 0)
-        self.plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.splitter.addWidget(self.plot)
 
         self.side_scroll = QScrollArea()
         self.side_scroll.setWidgetResizable(True)
-        self.side_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.side_scroll.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
+        self.side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.side_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.side_scroll.setMinimumWidth(235)
         self.side_scroll.setMaximumWidth(310)
         self.side_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         side_panel = QFrame()
         side_panel.setFrameShape(QFrame.StyledPanel)
-        side_panel.setMinimumWidth(0)
-        side_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(6, 6, 6, 6)
         side_layout.setSpacing(4)
@@ -121,16 +113,19 @@ class SignalTab(QWidget):
         self.type_label = QLabel(f"Tipo: {channel.signal_type.value}")
         self.index_label = QLabel(f"Canal: ch{channel.index}")
         self.unit_label = QLabel(
-            f"Unidades: bruto={channel.raw_unit} | exibição={channel.unit}"
+            "Sinal base: "
+            + (
+                "tensão diferencial na entrada do ADC (V)"
+                if channel.conversion_enabled
+                else f"contagem bruta ({channel.raw_unit})"
+            )
         )
         self.unit_label.setWordWrap(True)
         self.sample_rate_label = QLabel(f"Taxa: {channel.sample_rate_hz:g} Hz")
         self.sample_count_label = QLabel("Amostras: 0")
-        self.last_raw_value_label = QLabel("Último bruto: --")
-        self.last_converted_value_label = QLabel("Último convertido: --")
+        self.last_base_value_label = QLabel("Último base: --")
         self.last_processed_value_label = QLabel("Último processado: --")
         self.last_time_label = QLabel("Último timestamp: --")
-
         for widget in (
             self.title_label,
             self.type_label,
@@ -138,8 +133,7 @@ class SignalTab(QWidget):
             self.unit_label,
             self.sample_rate_label,
             self.sample_count_label,
-            self.last_raw_value_label,
-            self.last_converted_value_label,
+            self.last_base_value_label,
             self.last_processed_value_label,
             self.last_time_label,
         ):
@@ -147,30 +141,20 @@ class SignalTab(QWidget):
 
         view_group = QGroupBox("Sinal exibido")
         view_layout = QVBoxLayout(view_group)
-        self.raw_radio = QRadioButton("Bruto recebido")
-        self.converted_radio = QRadioButton("Convertido")
-        self.processed_radio = QRadioButton(
-            "Convertido + filtros" if channel.conversion_enabled else "Bruto + filtros"
-        )
-        self.raw_radio.setChecked(True)
-        self.converted_radio.setEnabled(channel.conversion_enabled)
+        self.base_radio = QRadioButton("Base")
+        self.processed_radio = QRadioButton("Processado")
+        self.base_radio.setChecked(True)
         self.view_button_group = QButtonGroup(self)
-        for button in (self.raw_radio, self.converted_radio, self.processed_radio):
+        for button in (self.base_radio, self.processed_radio):
             self.view_button_group.addButton(button)
             view_layout.addWidget(button)
         side_layout.addWidget(view_group)
 
-        conversion_group = QGroupBox("Conversão")
+        conversion_group = QGroupBox("Conversão configurada")
         conversion_layout = QVBoxLayout(conversion_group)
         self.conversion_profile_label = QLabel(
-            "Perfil: "
-            + (
-                channel.conversion.profile_id
-                if channel.conversion.enabled and channel.conversion.profile_id
-                else "desabilitada"
-            )
+            "Base: " + ("tensão diferencial" if channel.conversion_enabled else "counts")
         )
-        self.conversion_profile_label.setWordWrap(True)
         self.conversion_status_label = QLabel("Status: --")
         self.conversion_status_label.setWordWrap(True)
         conversion_layout.addWidget(self.conversion_profile_label)
@@ -196,14 +180,15 @@ class SignalTab(QWidget):
         if channel.default_filters:
             for filter_id in channel.default_filters:
                 definition = FILTER_DEFINITIONS.get(filter_id)
-                label = definition.display_name if definition else filter_id
-                checkbox = QCheckBox(label)
-                checkbox.setToolTip(definition.description if definition else filter_id)
+                checkbox = QCheckBox(
+                    definition.display_name if definition else filter_id
+                )
+                checkbox.setToolTip(
+                    definition.description if definition else filter_id
+                )
                 checkbox.toggled.connect(
                     lambda checked, fid=filter_id: self.filter_toggled.emit(
-                        self.channel.index,
-                        fid,
-                        checked,
+                        self.channel.index, fid, checked
                     )
                 )
                 self.filter_checkboxes[filter_id] = checkbox
@@ -222,7 +207,7 @@ class SignalTab(QWidget):
             metrics_layout.addWidget(widget)
         side_layout.addWidget(metrics_group)
 
-        spectrum_group = QGroupBox("Espectro da janela exibida")
+        spectrum_group = QGroupBox("Espectro exibido")
         spectrum_layout = QVBoxLayout(spectrum_group)
         self.peak_frequency_label = QLabel("Pico: --")
         self.peak_magnitude_label = QLabel("Magnitude do pico: --")
@@ -250,23 +235,36 @@ class SignalTab(QWidget):
         self.splitter.setSizes(self._normal_splitter_sizes)
         root.addWidget(self.splitter, stretch=1)
 
-        self.raw_radio.toggled.connect(self._on_display_mode_toggled)
-        self.converted_radio.toggled.connect(self._on_display_mode_toggled)
+        self.base_radio.toggled.connect(self._on_display_mode_toggled)
         self.processed_radio.toggled.connect(self._on_display_mode_toggled)
         self.time_radio.toggled.connect(self._on_plot_domain_toggled)
         self.spectrum_radio.toggled.connect(self._on_plot_domain_toggled)
         self.toggle_spectrum_button.clicked.connect(self._toggle_spectrum)
         self.focus_plot_button.toggled.connect(self.set_plot_focused)
+        self.zoom_in_button.clicked.connect(lambda: self.plot.zoom_horizontal(0.70))
+        self.zoom_out_button.clicked.connect(lambda: self.plot.zoom_horizontal(1.40))
+        self.follow_signal_button.toggled.connect(self.plot.set_follow_latest)
+        self.plot.follow_mode_changed.connect(self._set_follow_button_state)
+
+    @property
+    def requires_spectrum(self) -> bool:
+        return self.plot_domain == self.SPECTRUM_DOMAIN
+
+    @property
+    def spectrum_source(self) -> str:
+        return "processed" if self.display_mode == self.PROCESSED_MODE else "base"
+
+    def _set_follow_button_state(self, enabled: bool) -> None:
+        self.follow_signal_button.blockSignals(True)
+        self.follow_signal_button.setChecked(enabled)
+        self.follow_signal_button.blockSignals(False)
 
     def set_plot_focused(self, focused: bool) -> None:
-        """Expande o gráfico sem permitir que ele ultrapasse a aba disponível."""
-
         focused = bool(focused)
         if focused == self._plot_focused:
             return
-
+        sizes = self.splitter.sizes()
         if focused:
-            sizes = self.splitter.sizes()
             if len(sizes) == 2 and sizes[1] > 0:
                 self._normal_splitter_sizes = sizes
             self.side_scroll.hide()
@@ -276,29 +274,17 @@ class SignalTab(QWidget):
             self.side_scroll.show()
             self.splitter.setSizes(self._normal_splitter_sizes)
             self.focus_plot_button.setText("Focar")
-
         self._plot_focused = focused
-        self.focus_plot_button.blockSignals(True)
-        self.focus_plot_button.setChecked(focused)
-        self.focus_plot_button.blockSignals(False)
 
     def set_fullscreen_mode(self, enabled: bool) -> None:
-        """Ajusta espaçamentos internos sem impor tamanhos maiores que a tela."""
-
         self._fullscreen_mode = bool(enabled)
         layout = self.layout()
         if layout is not None:
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(2 if enabled else 4)
-        self.compact_channel_label.setVisible(not enabled or not self._plot_focused)
 
     def _on_display_mode_toggled(self) -> None:
-        if self.processed_radio.isChecked():
-            mode = self.PROCESSED_MODE
-        elif self.converted_radio.isChecked():
-            mode = self.CONVERTED_MODE
-        else:
-            mode = self.RAW_MODE
+        mode = self.PROCESSED_MODE if self.processed_radio.isChecked() else self.BASE_MODE
         if mode == self.display_mode:
             return
         self.display_mode = mode
@@ -310,9 +296,11 @@ class SignalTab(QWidget):
         if domain == self.plot_domain:
             return
         self.plot_domain = domain
+        self.follow_signal_button.setVisible(domain == self.TIME_DOMAIN)
         self.toggle_spectrum_button.setText(
             "Mostrar tempo" if domain == self.SPECTRUM_DOMAIN else "Mostrar espectro"
         )
+        self.plot_domain_changed.emit(self.channel.index, domain)
         self._redraw_last_snapshot()
 
     def _toggle_spectrum(self) -> None:
@@ -324,69 +312,48 @@ class SignalTab(QWidget):
     def update_from_snapshot(self, snapshot: ProcessedChannelSnapshot) -> None:
         self._last_snapshot = snapshot
         self.sample_count_label.setText(f"Amostras: {snapshot.sample_count}")
-        self.converted_radio.setEnabled(snapshot.conversion_enabled)
-        self.conversion_profile_label.setText(
-            f"Perfil: {snapshot.conversion_profile_id or 'desabilitada'}"
-        )
+        self.conversion_profile_label.setText(f"Base: {snapshot.base_label}")
         self.conversion_status_label.setText(
             "Status: " + " | ".join(snapshot.conversion_status)
         )
 
-        if snapshot.last_raw_value is None:
-            self._clear_values_only(snapshot)
-            return
-
-        self.last_raw_value_label.setText(
-            f"Último bruto: {snapshot.last_raw_value:g} {snapshot.conversion_input_unit}"
-        )
-        self.last_converted_value_label.setText(
-            "Último convertido: --"
-            if snapshot.last_converted_value is None
-            else (
-                f"Último convertido: {snapshot.last_converted_value:g} "
-                f"{snapshot.conversion_output_unit}"
-            )
+        self.last_base_value_label.setText(
+            "Último base: --"
+            if snapshot.last_base_value is None
+            else f"Último base: {snapshot.last_base_value:g} {snapshot.base_unit}"
         )
         self.last_processed_value_label.setText(
             "Último processado: --"
             if snapshot.last_processed_value is None
-            else (
-                f"Último processado: {snapshot.last_processed_value:g} "
-                f"{snapshot.conversion_output_unit}"
-            )
+            else f"Último processado: {snapshot.last_processed_value:g} {snapshot.base_unit}"
         )
-        self.last_time_label.setText(f"Último timestamp: {snapshot.last_timestamp_us} µs")
+        self.last_time_label.setText(
+            "Último timestamp: --"
+            if snapshot.last_timestamp_us is None
+            else f"Último timestamp: {snapshot.last_timestamp_us} µs"
+        )
 
-        active_filter_set = set(snapshot.active_filters)
+        active = set(snapshot.active_filters)
         for filter_id, checkbox in self.filter_checkboxes.items():
             checkbox.blockSignals(True)
-            checkbox.setChecked(filter_id in active_filter_set)
+            checkbox.setChecked(filter_id in active)
             checkbox.blockSignals(False)
-
         if snapshot.active_filters:
-            names = []
-            for filter_id in snapshot.active_filters:
-                definition = FILTER_DEFINITIONS.get(filter_id)
-                names.append(definition.display_name if definition else filter_id)
+            names = [
+                FILTER_DEFINITIONS[fid].display_name
+                if fid in FILTER_DEFINITIONS
+                else fid
+                for fid in snapshot.active_filters
+            ]
             self.active_filters_label.setText("Filtros ativos: " + ", ".join(names))
         else:
             self.active_filters_label.setText("Filtros ativos: nenhum")
-
         self.filter_status_label.setText(
             "Status dos filtros: " + " | ".join(snapshot.filter_status)
         )
         self._update_metrics(snapshot)
         self._update_spectrum_info(snapshot)
         self._draw_snapshot(snapshot)
-
-    def _clear_values_only(self, snapshot: ProcessedChannelSnapshot) -> None:
-        self.last_raw_value_label.setText("Último bruto: --")
-        self.last_converted_value_label.setText("Último convertido: --")
-        self.last_processed_value_label.setText("Último processado: --")
-        self.last_time_label.setText("Último timestamp: --")
-        self._update_metrics(snapshot)
-        self._update_spectrum_info(snapshot)
-        self.plot.clear()
 
     def _redraw_last_snapshot(self) -> None:
         if self._last_snapshot is not None:
@@ -395,48 +362,32 @@ class SignalTab(QWidget):
 
     def _selected_values(self, snapshot: ProcessedChannelSnapshot):
         if self.display_mode == self.PROCESSED_MODE:
-            return snapshot.processed_values, snapshot.conversion_output_unit, "processado"
-        if self.display_mode == self.CONVERTED_MODE:
-            return snapshot.converted_values, snapshot.conversion_output_unit, "convertido"
-        return snapshot.raw_values, snapshot.conversion_input_unit, "bruto"
+            return snapshot.processed_values, snapshot.base_unit, "processado"
+        return snapshot.base_values, snapshot.base_unit, "base"
+
+    def _selected_spectrum(self, snapshot: ProcessedChannelSnapshot):
+        return (
+            snapshot.processed_spectrum
+            if self.display_mode == self.PROCESSED_MODE
+            else snapshot.base_spectrum
+        )
 
     def _draw_snapshot(self, snapshot: ProcessedChannelSnapshot) -> None:
-        _, unit, label = self._selected_values(snapshot)
-        if self.plot_domain == self.SPECTRUM_DOMAIN:
-            self.plot.set_spectrum(self._selected_spectrum(snapshot), f"espectro {label}", unit=unit)
-            return
         values, unit, label = self._selected_values(snapshot)
-        self.plot.set_time_series(snapshot.x_seconds, values, label, unit=unit)
-
-    def _selected_spectrum(self, snapshot: ProcessedChannelSnapshot) -> SpectrumSnapshot:
-        if self.display_mode == self.PROCESSED_MODE:
-            return snapshot.processed_spectrum
-        if self.display_mode == self.CONVERTED_MODE:
-            return snapshot.converted_spectrum
-        return snapshot.raw_spectrum
-
-    def _selected_unit(self, snapshot: ProcessedChannelSnapshot) -> str:
-        return (
-            snapshot.conversion_input_unit
-            if self.display_mode == self.RAW_MODE
-            else snapshot.conversion_output_unit
-        )
+        if self.plot_domain == self.SPECTRUM_DOMAIN:
+            self.plot.set_spectrum(
+                self._selected_spectrum(snapshot), f"espectro {label}", unit=unit
+            )
+        else:
+            self.plot.set_time_series(snapshot.x_seconds, values, label, unit=unit)
 
     def _update_metrics(self, snapshot: ProcessedChannelSnapshot) -> None:
         metrics = snapshot.metrics
-        unit = snapshot.conversion_output_unit
-        self.mean_label.setText(
-            "Média: --" if metrics.mean is None else f"Média: {metrics.mean:g} {unit}"
-        )
-        self.rms_label.setText(
-            "RMS: --" if metrics.rms is None else f"RMS: {metrics.rms:g} {unit}"
-        )
-        self.min_label.setText(
-            "Mínimo: --" if metrics.minimum is None else f"Mínimo: {metrics.minimum:g} {unit}"
-        )
-        self.max_label.setText(
-            "Máximo: --" if metrics.maximum is None else f"Máximo: {metrics.maximum:g} {unit}"
-        )
+        unit = snapshot.base_unit
+        self.mean_label.setText("Média: --" if metrics.mean is None else f"Média: {metrics.mean:g} {unit}")
+        self.rms_label.setText("RMS: --" if metrics.rms is None else f"RMS: {metrics.rms:g} {unit}")
+        self.min_label.setText("Mínimo: --" if metrics.minimum is None else f"Mínimo: {metrics.minimum:g} {unit}")
+        self.max_label.setText("Máximo: --" if metrics.maximum is None else f"Máximo: {metrics.maximum:g} {unit}")
 
     def _update_spectrum_info(self, snapshot: ProcessedChannelSnapshot) -> None:
         spectrum = self._selected_spectrum(snapshot)
@@ -445,13 +396,11 @@ class SignalTab(QWidget):
             self.peak_magnitude_label.setText("Magnitude do pico: --")
             self.resolution_label.setText("Resolução: --")
             return
-
-        unit = self._selected_unit(snapshot)
         self.peak_frequency_label.setText(f"Pico: {spectrum.peak_frequency_hz:g} Hz")
         self.peak_magnitude_label.setText(
             "Magnitude do pico: --"
             if spectrum.peak_magnitude is None
-            else f"Magnitude do pico: {spectrum.peak_magnitude:g} {unit}"
+            else f"Magnitude do pico: {spectrum.peak_magnitude:g} {snapshot.base_unit}"
         )
         self.resolution_label.setText(
             "Resolução: --"
@@ -463,8 +412,7 @@ class SignalTab(QWidget):
         self._last_snapshot = None
         self.plot.clear()
         self.sample_count_label.setText("Amostras: 0")
-        self.last_raw_value_label.setText("Último bruto: --")
-        self.last_converted_value_label.setText("Último convertido: --")
+        self.last_base_value_label.setText("Último base: --")
         self.last_processed_value_label.setText("Último processado: --")
         self.last_time_label.setText("Último timestamp: --")
         self.conversion_status_label.setText("Status: --")
@@ -479,5 +427,4 @@ class SignalTab(QWidget):
             self.peak_magnitude_label,
             self.resolution_label,
         ):
-            text = label.text().split(":", 1)[0]
-            label.setText(f"{text}: --")
+            label.setText(f"{label.text().split(':', 1)[0]}: --")

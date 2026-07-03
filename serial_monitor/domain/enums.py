@@ -33,6 +33,7 @@ class ConversionModel(str, Enum):
     LINEAR = "linear"
     POLYNOMIAL = "polynomial"
     LOOKUP_TABLE = "lookup_table"
+    ADS1256_DIFFERENTIAL = "ads1256_differential"
 
 
 class ProtocolMode(str, Enum):

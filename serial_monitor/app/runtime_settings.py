@@ -19,7 +19,6 @@ class RuntimeSettings:
     recording_flush_interval_ms: int = 1000
     minimum_free_disk_mb: int = 256
     operational_update_interval_ms: int = 1000
-    conversion_profiles_path: Path = Path("config/conversion_profiles.json")
 
     @property
     def sessions_dir(self) -> Path:
@@ -54,12 +53,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data"),
         help="diretório base para sessões salvas e presets",
-    )
-    parser.add_argument(
-        "--conversion-profiles",
-        type=Path,
-        default=Path("config/conversion_profiles.json"),
-        help="arquivo JSON versionado com perfis de conversão",
     )
     parser.add_argument(
         "--recording-queue-capacity",
@@ -127,5 +120,4 @@ def parse_runtime_settings(argv: Sequence[str] | None = None) -> RuntimeSettings
         recording_flush_interval_ms=int(namespace.recording_flush_interval_ms),
         minimum_free_disk_mb=int(namespace.minimum_free_disk_mb),
         operational_update_interval_ms=int(namespace.operational_update_interval_ms),
-        conversion_profiles_path=Path(namespace.conversion_profiles),
     )

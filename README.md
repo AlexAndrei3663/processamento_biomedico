@@ -17,7 +17,7 @@ Principais recursos:
 - interface otimizada para operação por toque em `1024 × 600`;
 - visualização temporal e espectral por canal;
 - filtros digitais configuráveis;
-- conversão opcional de unidades por perfis externos e versionados;
+- seleção por canal entre contagem bruta e tensão diferencial do ADS1256;
 - gravação contínua em HDF5, independente do buffer de visualização;
 - exportação completa para CSV em blocos;
 - verificação SHA-256 da integridade das sessões;
@@ -65,7 +65,7 @@ Interface PyQt5 / PyQtGraph
 | `serial_monitor/domain` | Modelos, enums e contratos de domínio. |
 | `serial_monitor/application` | Regras de aquisição, sessão, conversão, gravação e diagnóstico. |
 | `serial_monitor/infrastructure/serial` | Leitura da porta serial e parsing do protocolo. |
-| `serial_monitor/infrastructure/storage` | Presets, perfis de conversão, HDF5, integridade e exportação. |
+| `serial_monitor/infrastructure/storage` | Presets, HDF5, integridade, exportação e compatibilidade com sessões antigas. |
 | `serial_monitor/processing` | Buffer circular, filtros, métricas e espectro. |
 | `serial_monitor/ui` | Telas, abas e widgets da interface gráfica. |
 | `serial_monitor/validation` | Geração sintética, planos e relatórios de validação. |
@@ -84,7 +84,7 @@ A descrição técnica detalhada está em [`docs/ARCHITECTURE.md`](docs/ARCHITEC
    - a fila de gravação contínua.
 5. A interface consulta snapshots em uma frequência própria, sem alterar a taxa de aquisição.
 6. A gravação escreve o sinal bruto em HDF5 por lotes.
-7. Conversões, filtros, métricas e FFT são produtos derivados e podem ser recalculados.
+7. A seleção bruto/tensão, os filtros, as métricas e a FFT são produtos derivados e podem ser recalculados.
 
 ## Protocolo serial
 
@@ -136,8 +136,8 @@ Estrutura principal:
 
 Características:
 
-- o HDF5 preserva os valores recebidos, sem substituir o bruto por valores convertidos;
-- a configuração dos canais, perfis de conversão e filtros ativos é registrada nos metadados;
+- o HDF5 preserva as contagens recebidas, sem substituí-las por tensão ou valores filtrados;
+- VREF, ganho global do PGA, modo de exibição por canal e filtros ativos são registrados nos metadados;
 - os datasets usam compressão GZIP leve;
 - a integridade é verificada por SHA-256 independente do tamanho dos lotes;
 - sessões interrompidas encontradas na inicialização são fechadas com o conteúdo confirmado disponível;
@@ -221,7 +221,7 @@ O diagnóstico informa:
 - versão do Python;
 - sistema operacional e arquitetura;
 - disponibilidade das dependências;
-- presença do arquivo de perfis de conversão;
+- presença do plano de validação;
 - portas seriais detectadas.
 
 ## Execução
@@ -256,7 +256,6 @@ chmod +x scripts/run_raspberry.sh
 | `--update-interval-ms` | `100` | Intervalo de atualização da GUI, entre 50 e 2000 ms. |
 | `--max-plot-points` | `5000` | Máximo de pontos renderizados por curva. |
 | `--data-dir` | `data` | Diretório de sessões e presets. |
-| `--conversion-profiles` | `config/conversion_profiles.json` | Arquivo de perfis de conversão. |
 | `--recording-queue-capacity` | `8192` | Capacidade máxima da fila de gravação. |
 | `--recording-batch-size` | `256` | Quantidade de frames por lote HDF5. |
 | `--recording-flush-interval-ms` | `1000` | Intervalo máximo entre flushes. |
@@ -286,12 +285,13 @@ Na página **Configuração**:
 1. atualize a lista de portas seriais;
 2. confirme a porta e o baudrate;
 3. selecione a taxa base e o tamanho da janela;
-4. escolha um tipo de sinal e pressione **Adicionar canal**;
-5. organize a ordem usando **Subir**, **Descer** e **Remover**;
-6. habilite conversões por canal somente quando houver perfil apropriado;
-7. ajuste o intervalo de atualização da tela;
-8. valide a sessão;
-9. salve um preset quando desejar reutilizar a configuração.
+4. informe a tensão de referência do ADS1256 e selecione o ganho global do PGA;
+5. escolha um tipo de sinal e pressione **Adicionar canal**;
+6. organize a ordem usando **Subir**, **Descer** e **Remover**;
+7. para cada canal, selecione **Contagem bruta** ou **Tensão diferencial na entrada do ADC**;
+8. ajuste o intervalo de atualização da tela;
+9. valide a sessão;
+10. salve um preset quando desejar reutilizar a configuração.
 
 A ordem exibida na lista determina a ordem esperada dos valores no frame serial.
 
@@ -302,12 +302,15 @@ Na página **Visualização ao vivo**:
 1. pressione **Conectar**;
 2. confira o estado da comunicação;
 3. selecione a aba do canal;
-4. alterne entre visualização temporal e espectral;
-5. habilite ou desabilite filtros;
-6. use **Focar** para ampliar o gráfico sem ultrapassar a tela;
-7. use **Limpar** apenas para reiniciar a janela visual e a referência da sequência.
+4. escolha entre **Base** e **Processado**;
+5. alterne entre visualização temporal e espectral;
+6. habilite ou desabilite filtros;
+7. use `+`, `−`, a roda do mouse ou o gesto equivalente para zoom horizontal;
+8. desative **Seguir** para inspecionar uma faixa fixa e reative-o para acompanhar o timestamp mais recente;
+9. use **Focar** para ampliar o gráfico sem ultrapassar a tela;
+10. use **Limpar** apenas para reiniciar a janela visual e a referência da sequência.
 
-O eixo temporal acompanha o `timestamp_us` recebido e avança com a sessão. Limpar o gráfico não remove dados já gravados.
+O eixo temporal acompanha o `timestamp_us` recebido e avança com a sessão. O zoom altera apenas o `ViewBox`; não recalcula filtros, FFT nem relê a serial. Limpar o gráfico não remove dados já gravados.
 
 ### 3. Gravar uma sessão
 
@@ -332,24 +335,36 @@ Na página **Sessões**:
 - exporte a sessão completa para CSV;
 - acompanhe ou cancele a exportação.
 
-## Conversão de unidades
+## Seleção do sinal base e conversão do ADS1256
 
-Os perfis ficam em:
+O microcontrolador transmite a contagem assinada de 24 bits produzida pelo ADC. A gravação HDF5 preserva sempre esse valor recebido. Na configuração, cada canal escolhe qual sinal será usado como **base** na interface e no processamento:
+
+- **Contagem bruta:** unidade `count`;
+- **Tensão diferencial na entrada do ADC:** unidade `V`.
+
+O ADS1256 é considerado no modo diferencial, de modo que a tensão corresponde a `AINP − AINN`. A tensão de referência e o ganho do PGA são globais para todos os canais e devem coincidir com a configuração física e com o firmware. Ganhos aceitos: `1`, `2`, `4`, `8`, `16`, `32` e `64`.
+
+A faixa nominal é:
 
 ```text
-config/conversion_profiles.json
+VFS = ±(2 × VREF / PGA)
 ```
 
-Modelos suportados:
+A conversão trata separadamente os extremos positivo e negativo do complemento de dois:
 
-- identidade;
-- linear;
-- polinomial;
-- tabela de calibração.
+```text
+count >= 0: V = count × VFS / 8_388_607
+count <  0: V = count × VFS / 8_388_608
+```
 
-A conversão é desativada por padrão. Quando habilitada, a sessão guarda um snapshot completo do perfil utilizado, garantindo reprodução posterior mesmo que o arquivo global seja alterado.
+A tela ao vivo não apresenta um modo independente chamado “convertido”. Ela oferece somente:
 
-Perfis genéricos incluídos servem para exercitar a arquitetura e não representam calibração clínica validada.
+- **Base:** bruto ou tensão, conforme selecionado na configuração;
+- **Processado:** o mesmo sinal base após os filtros ativos.
+
+A tensão calculada é a tensão diferencial na entrada do ADS1256. Ela não recompõe automaticamente a tensão original nos eletrodos ou no sensor, pois o front-end analógico pode aplicar ganho, offset e filtragem.
+
+O arquivo `config/conversion_profiles.json` é mantido apenas para ensaios automatizados e compatibilidade com sessões antigas que usavam perfis genéricos. Ele não é necessário para a conversão ADS1256 da interface atual.
 
 ## Processamento de sinais
 
@@ -374,6 +389,22 @@ Métricas básicas:
 O espectro é calculado por FFT unilateral, com frequência dominante, magnitude de pico e resolução espectral.
 
 Os filtros atuais são aplicados sobre janelas com processamento não causal. Por isso, a descrição correta do sistema é **aquisição contínua com processamento e visualização em tempo quase real**, e não filtragem causal em tempo real estrito.
+
+### Medidas de redução de processamento
+
+Durante a operação ao vivo:
+
+- somente a aba visível é convertida, filtrada e atualizada;
+- nenhuma FFT é calculada no domínio temporal;
+- no domínio espectral, calcula-se apenas o espectro atualmente selecionado, base ou processado;
+- snapshots sem nova sequência não são redesenhados;
+- páginas que não exibem gráficos não executam o pipeline gráfico;
+- o gráfico recebe no máximo `max_plot_points`;
+- títulos, rótulos e faixas são reaplicados somente quando necessário;
+- o diagnóstico de CPU, RAM, temperatura e disco só atualiza a tela ao vivo quando ela está visível;
+- o resumo da configuração usa diretamente o buffer bruto, sem conversão, filtros, métricas ou FFT;
+- mensagens de log ficam em uma fila limitada enquanto a página de configuração não está visível e são inseridas no widget em lote ao abrir a página;
+- erros de protocolo são contabilizados individualmente, mas relatados graficamente de forma agregada, no máximo uma vez por segundo.
 
 ## Validação automatizada
 
@@ -497,7 +528,7 @@ python -m compileall -q serial_monitor tests scripts
 data/
 ├── sessions/         arquivos HDF5 e CSV
 ├── config_presets/   presets da interface
-└── validation_run/   artefatos dos ensaios automatizados
+└── validation/       artefatos dos ensaios automatizados
 ```
 
 O diretório `data/` é ignorado pelo Git por padrão.
@@ -509,7 +540,7 @@ O diretório `data/` é ignorado pelo Git por padrão.
 - a taxa configurada ainda deve ser comparada com a taxa efetiva obtida pelos timestamps;
 - a leitura serial entrega frames ao controlador Qt por sinais; a suficiência desse modelo deve ser confirmada em ensaios prolongados;
 - temperatura de CPU pode não estar disponível fora do Linux/Raspberry Pi;
-- os perfis de conversão genéricos não substituem calibração experimental;
+- a conversão nominal para tensão não substitui a calibração do ADC nem a caracterização do front-end analógico;
 - os ensaios sintéticos não substituem gerador de funções, osciloscópio, hardware completo ou equipamento biomédico de referência.
 
 ## Documentação complementar

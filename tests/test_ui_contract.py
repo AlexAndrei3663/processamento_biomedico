@@ -22,19 +22,21 @@ def test_touch_configuration_exposes_conversion_controls() -> None:
         encoding="utf-8"
     )
 
-    assert "conversion_enabled_checkbox" in source
-    assert "conversion_profile_selector" in source
+    assert "adc_reference_voltage_input" in source
+    assert "adc_gain_selector" in source
+    assert "channel_base_mode_selector" in source
     assert "channel_conversion_configs" in source
 
 
-def test_live_tab_distinguishes_raw_converted_and_processed() -> None:
+def test_live_tab_distinguishes_base_and_processed() -> None:
     source = (ROOT / "serial_monitor/ui/widgets/signal_tab.py").read_text(
         encoding="utf-8"
     )
 
-    assert 'RAW_MODE = "raw"' in source
-    assert 'CONVERTED_MODE = "converted"' in source
+    assert 'BASE_MODE = "base"' in source
     assert 'PROCESSED_MODE = "processed"' in source
+    assert 'CONVERTED_MODE = "converted"' not in source
+    assert "converted_radio" not in source
 
 
 def test_manual_protocol_test_controls_were_removed() -> None:
@@ -123,7 +125,9 @@ def test_reconnection_resets_sequence_baseline_and_plot_follows_timestamp() -> N
     assert "reset_stream_baseline=True" in controller_source
     assert "self.clear_buffers(reset_stream_baseline=True)" in acquisition_source
     assert "self._time_origin_us" in ring_source
-    assert "view_x_min = x_max - x_window" in plot_source
+    assert "self._set_x_range(max(x_min, x_max - window), x_max)" in plot_source
+    assert "zoom_horizontal" in plot_source
+    assert "follow_mode_changed" in plot_source
     assert 'x_min = max(0.0, data_x_min) if self._current_domain == "time"' in plot_source
     assert "y_min = min(0.0, data_y_min)" in plot_source
 
@@ -144,3 +148,22 @@ def test_operational_panel_exposes_required_diagnostics() -> None:
         assert token in live_source
     assert "refresh_operational_status" in controller_source
     assert "OperationalMonitor" in controller_source
+
+
+def test_logs_and_protocol_errors_are_graphically_throttled() -> None:
+    main_source = (ROOT / "serial_monitor/ui/main_window.py").read_text(encoding="utf-8")
+    serial_source = (ROOT / "serial_monitor/infrastructure/serial/serial_reader.py").read_text(encoding="utf-8")
+    controller_source = (ROOT / "serial_monitor/app/bootstrap.py").read_text(encoding="utf-8")
+
+    assert "_pending_log_lines" in main_source
+    assert "_flush_pending_logs" in main_source
+    assert "PROTOCOL_REPORT_INTERVAL_S" in serial_source
+    assert "self.wait(1500)" not in serial_source
+    assert "def on_protocol_error(self, count: int, message: str)" in controller_source
+
+
+def test_new_validation_disconnects_current_serial_first() -> None:
+    controller_source = (ROOT / "serial_monitor/app/bootstrap.py").read_text(encoding="utf-8")
+    assert "request_session_validation" in controller_source
+    assert "self._pending_session_validation = True" in controller_source
+    assert "QTimer.singleShot(0, self.validate_session)" in controller_source

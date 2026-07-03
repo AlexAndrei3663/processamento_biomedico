@@ -149,11 +149,8 @@ def test_polynomial_and_lookup_table_models() -> None:
     )
 
 
-def test_session_service_resolves_profile_snapshot(tmp_path: Path) -> None:
-    path = tmp_path / "profiles.json"
-    write_profiles(path)
-    repository = ConversionProfileRepository(path)
-    service = SessionService(repository)
+def test_session_service_builds_ads1256_voltage_snapshot() -> None:
+    service = SessionService()
 
     session = service.build_session(
         port="/dev/ttyUSB0",
@@ -162,37 +159,59 @@ def test_session_service_resolves_profile_snapshot(tmp_path: Path) -> None:
         window_size=1000,
         signal_order_text="ecg,ppg",
         channel_conversions=[
-            {"channel_index": 0, "enabled": True, "profile_id": "ecg_linear"},
-            {"channel_index": 1, "enabled": False, "profile_id": None},
+            {"channel_index": 0, "mode": "voltage"},
+            {"channel_index": 1, "mode": "raw"},
         ],
+        adc_reference_voltage_v=2.5,
+        adc_gain=2,
     )
 
+    assert session.adc.reference_voltage_v == pytest.approx(2.5)
+    assert session.adc.gain == 2
     assert session.channels[0].conversion.enabled is True
-    assert session.channels[0].unit == "mV"
-    assert session.channels[0].conversion_profile is repository.get("ecg_linear")
+    assert session.channels[0].unit == "V"
+    assert session.channels[0].conversion_profile is not None
+    assert session.channels[0].conversion_profile.model is ConversionModel.ADS1256_DIFFERENTIAL
     assert session.channels[1].conversion.enabled is False
     assert session.channels[1].unit == "count"
 
 
-def test_incompatible_profile_is_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "profiles.json"
-    write_profiles(path)
-    service = SessionService(ConversionProfileRepository(path))
+def test_ads1256_differential_conversion_uses_signed_24_bit_limits() -> None:
+    service = SessionService()
+    session = service.build_session(
+        port="/dev/ttyUSB0",
+        baudrate=115200,
+        base_sample_rate_hz=1000,
+        window_size=1000,
+        signal_order_text="ecg",
+        channel_conversions=[{"channel_index": 0, "mode": "voltage"}],
+        adc_reference_voltage_v=2.5,
+        adc_gain=1,
+    )
 
-    with pytest.raises(ValueError, match="incompatível"):
+    result = ConversionService().convert(
+        np.asarray([-8_388_608.0, 0.0, 8_388_607.0]),
+        session.channels[0],
+    )
+
+    np.testing.assert_allclose(result.values, [-5.0, 0.0, 5.0])
+
+
+def test_invalid_global_adc_gain_is_rejected() -> None:
+    service = SessionService()
+    with pytest.raises(ValueError, match="ganho"):
         service.build_session(
             port="/dev/ttyUSB0",
             baudrate=115200,
             base_sample_rate_hz=1000,
             window_size=1000,
             signal_order_text="ppg",
-            channel_conversions=[
-                {"channel_index": 0, "enabled": True, "profile_id": "ecg_linear"}
-            ],
+            channel_conversions=[{"channel_index": 0, "mode": "voltage"}],
+            adc_gain=3,
         )
 
 
-def test_preset_persists_channel_conversion_configuration(tmp_path: Path) -> None:
+def test_preset_persists_adc_and_channel_base_mode(tmp_path: Path) -> None:
     from serial_monitor.infrastructure.storage.config_repository import ConfigRepository
 
     repository = ConfigRepository(tmp_path)
@@ -204,16 +223,20 @@ def test_preset_persists_channel_conversion_configuration(tmp_path: Path) -> Non
         window_size=1000,
         signal_order_text="ecg,ppg",
         channel_conversions=[
-            {"channel_index": 0, "enabled": True, "profile_id": "ecg_linear"},
-            {"channel_index": 1, "enabled": False, "profile_id": None},
+            {"channel_index": 0, "mode": "voltage"},
+            {"channel_index": 1, "mode": "raw"},
         ],
+        adc_reference_voltage_v=2.5,
+        adc_gain=8,
     )
 
     loaded = repository.load_preset("Projeto padrão")
 
     assert loaded.channel_conversions[0] == {
         "channel_index": 0,
-        "enabled": True,
-        "profile_id": "ecg_linear",
+        "mode": "voltage",
     }
-    assert loaded.channel_conversions[1]["enabled"] is False
+    assert loaded.channel_conversions[1]["mode"] == "raw"
+    assert loaded.adc_reference_voltage_v == pytest.approx(2.5)
+    assert loaded.adc_gain == 8
+

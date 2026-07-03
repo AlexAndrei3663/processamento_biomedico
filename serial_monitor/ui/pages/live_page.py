@@ -42,6 +42,8 @@ class LivePage(QWidget):
 
     filter_toggled = pyqtSignal(int, str, bool)
     display_mode_changed = pyqtSignal(int, str)
+    plot_domain_changed = pyqtSignal(int, str)
+    active_channel_changed = pyqtSignal(int)
     fullscreen_requested = pyqtSignal()
 
     def __init__(
@@ -236,7 +238,7 @@ class LivePage(QWidget):
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         placeholder.setWordWrap(True)
         self.live_tabs.addTab(placeholder, "Sem sessão")
-        self.live_tabs.currentChanged.connect(self._refresh_current_tab)
+        self.live_tabs.currentChanged.connect(self._on_current_tab_changed)
 
         live_layout.addWidget(self.live_tabs, stretch=1)
         root.addWidget(self.live_group, stretch=1)
@@ -293,12 +295,34 @@ class LivePage(QWidget):
             tab = SignalTab(channel, max_plot_points=self.max_plot_points)
             tab.filter_toggled.connect(self.filter_toggled.emit)
             tab.display_mode_changed.connect(self.display_mode_changed.emit)
+            tab.plot_domain_changed.connect(self.plot_domain_changed.emit)
             tab.set_fullscreen_mode(self._fullscreen_layout)
             self.signal_tabs[channel.index] = tab
             self.live_tabs.addTab(
                 tab,
                 f"ch{channel.index} - {channel.display_name}",
             )
+
+    @property
+    def current_channel_index(self) -> int | None:
+        current_tab = self.live_tabs.currentWidget()
+        return current_tab.channel.index if isinstance(current_tab, SignalTab) else None
+
+    @property
+    def current_display_mode(self) -> str:
+        current_tab = self.live_tabs.currentWidget()
+        return current_tab.display_mode if isinstance(current_tab, SignalTab) else "base"
+
+    @property
+    def current_plot_domain(self) -> str:
+        current_tab = self.live_tabs.currentWidget()
+        return current_tab.plot_domain if isinstance(current_tab, SignalTab) else "time"
+
+    def _on_current_tab_changed(self, _tab_index: int) -> None:
+        self._refresh_current_tab()
+        channel_index = self.current_channel_index
+        if channel_index is not None:
+            self.active_channel_changed.emit(channel_index)
 
     def clear_signal_tabs(self) -> None:
         self._latest_snapshot = None

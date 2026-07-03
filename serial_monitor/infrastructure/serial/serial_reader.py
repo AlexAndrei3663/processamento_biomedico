@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 from PyQt5.QtCore import QThread, pyqtSignal
 import serial
 
@@ -8,23 +11,49 @@ from .protocol import FrameCsvParser, FrameProtocolError
 
 
 class SerialReader(QThread):
+    """Leitor serial assíncrono com encerramento não bloqueante e erros agregados."""
+
     frame_received = pyqtSignal(object)
     error_occurred = pyqtSignal(str)
-    protocol_error = pyqtSignal(str)
+    protocol_error = pyqtSignal(int, str)
     connection_changed = pyqtSignal(bool)
+
+    PROTOCOL_REPORT_INTERVAL_S = 1.0
+    INCOMPATIBLE_PROTOCOL_GRACE_S = 2.0
+    INCOMPATIBLE_PROTOCOL_INVALID_LIMIT = 100
 
     def __init__(self, parser: FrameCsvParser | None = None):
         super().__init__()
         self._parser = parser or FrameCsvParser()
         self._session: SessionConfig | None = None
         self._running = False
+        self._serial_port: serial.Serial | None = None
+        self._serial_lock = threading.Lock()
 
     def configure(self, session: SessionConfig) -> None:
+        if self.isRunning():
+            raise RuntimeError("Não é possível reconfigurar a serial durante a leitura.")
         self._session = session
 
     def stop(self) -> None:
+        """Solicita a parada sem bloquear a thread da interface."""
+
         self._running = False
-        self.wait(1500)
+        self.requestInterruption()
+        with self._serial_lock:
+            port = self._serial_port
+        if port is None:
+            return
+
+        try:
+            cancel_read = getattr(port, "cancel_read", None)
+            if callable(cancel_read):
+                cancel_read()
+            else:
+                port.close()
+        except Exception:
+            # A thread encerrará pelo timeout curto ou pelo fechamento da porta.
+            pass
 
     def run(self) -> None:
         if self._session is None:
@@ -32,24 +61,83 @@ class SerialReader(QThread):
             return
 
         self._running = True
-        try:
-            with serial.Serial(self._session.port, self._session.baudrate, timeout=0.2) as ser:
-                self.connection_changed.emit(True)
-                while self._running:
-                    raw_line = ser.readline()
-                    if not raw_line:
-                        continue
+        invalid_count = 0
+        invalid_total = 0
+        valid_total = 0
+        last_invalid_message = ""
+        last_report = time.monotonic()
+        connected_at = last_report
+        connected = False
 
+        try:
+            port = serial.Serial(
+                self._session.port,
+                self._session.baudrate,
+                timeout=0.1,
+            )
+            with self._serial_lock:
+                self._serial_port = port
+            connected = True
+            self.connection_changed.emit(True)
+
+            while self._running and not self.isInterruptionRequested():
+                try:
+                    raw_line = port.readline()
+                except (serial.SerialException, OSError) as exc:
+                    if self._running and not self.isInterruptionRequested():
+                        self.error_occurred.emit(f"Erro durante leitura serial: {exc}")
+                    break
+
+                now = time.monotonic()
+                if raw_line:
                     try:
                         decoded_line = raw_line.decode("utf-8", errors="ignore")
                         parsed = self._parser.parse_line(decoded_line, self._session)
+                        valid_total += 1
                         self.frame_received.emit(parsed.frame)
                     except FrameProtocolError as exc:
-                        self.protocol_error.emit(str(exc))
+                        invalid_count += 1
+                        invalid_total += 1
+                        last_invalid_message = str(exc)
                     except Exception as exc:
-                        self.error_occurred.emit(f"Erro inesperado ao processar linha serial: {exc}")
+                        self.error_occurred.emit(
+                            f"Erro inesperado ao processar linha serial: {exc}"
+                        )
+
+                if invalid_count and now - last_report >= self.PROTOCOL_REPORT_INTERVAL_S:
+                    self.protocol_error.emit(invalid_count, last_invalid_message)
+                    invalid_count = 0
+                    last_report = now
+
+                if (
+                    valid_total == 0
+                    and invalid_total >= self.INCOMPATIBLE_PROTOCOL_INVALID_LIMIT
+                    and now - connected_at >= self.INCOMPATIBLE_PROTOCOL_GRACE_S
+                ):
+                    self.error_occurred.emit(
+                        "Nenhum frame válido foi reconhecido. Verifique baudrate, "
+                        "porta selecionada e versão do protocolo."
+                    )
+                    break
+
         except serial.SerialException as exc:
-            self.error_occurred.emit(f"Erro serial: {exc}")
+            if self._running and not self.isInterruptionRequested():
+                self.error_occurred.emit(f"Erro serial: {exc}")
         finally:
+            if invalid_count:
+                self.protocol_error.emit(invalid_count, last_invalid_message)
             self._running = False
-            self.connection_changed.emit(False)
+            with self._serial_lock:
+                port = self._serial_port
+                self._serial_port = None
+            if port is not None:
+                try:
+                    if port.is_open:
+                        port.close()
+                except Exception:
+                    pass
+            if connected:
+                self.connection_changed.emit(False)
+            else:
+                # Mantém a interface em estado coerente mesmo se a abertura falhar.
+                self.connection_changed.emit(False)

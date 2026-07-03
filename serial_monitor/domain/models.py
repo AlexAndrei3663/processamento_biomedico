@@ -65,6 +65,17 @@ class ConversionProfile:
                 raise ValueError(
                     f"Perfil por tabela '{self.profile_id}' exige listas 'input' e 'output' compatíveis."
                 )
+        elif self.model == ConversionModel.ADS1256_DIFFERENTIAL:
+            vref = float(self.parameters.get("reference_voltage_v", 0.0))
+            gain = int(self.parameters.get("gain", 0))
+            if vref <= 0:
+                raise ValueError(
+                    f"Perfil ADS1256 '{self.profile_id}' exige reference_voltage_v positivo."
+                )
+            if gain not in AdcConfig.VALID_GAINS:
+                raise ValueError(
+                    f"Perfil ADS1256 '{self.profile_id}' possui ganho inválido: {gain}."
+                )
 
     def to_dict(self) -> dict:
         return {
@@ -83,6 +94,35 @@ class ConversionProfile:
             "reference_equipment": self.reference_equipment,
             "estimated_uncertainty": self.estimated_uncertainty,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class AdcConfig:
+    """Configuração global do ADS1256 usada para converter counts em tensão."""
+
+    model: str = "ADS1256"
+    input_mode: str = "differential"
+    reference_voltage_v: float = 2.5
+    gain: int = 1
+
+    VALID_GAINS = (1, 2, 4, 8, 16, 32, 64)
+
+    def __post_init__(self) -> None:
+        if self.model.upper() != "ADS1256":
+            raise ValueError("O ADC suportado nesta configuração é o ADS1256.")
+        if self.input_mode != "differential":
+            raise ValueError("A conversão implementada usa o ADS1256 em modo diferencial.")
+        if self.reference_voltage_v <= 0:
+            raise ValueError("A tensão de referência do ADC deve ser maior que zero.")
+        if self.gain not in self.VALID_GAINS:
+            raise ValueError(
+                "O ganho do ADS1256 deve ser um de: "
+                + ", ".join(str(value) for value in self.VALID_GAINS)
+            )
+
+    @property
+    def full_scale_voltage_v(self) -> float:
+        return 2.0 * self.reference_voltage_v / self.gain
 
 
 @dataclass(slots=True)
@@ -142,6 +182,7 @@ class SessionConfig:
     window_size: int
     protocol_mode: ProtocolMode
     channels: List[SignalChannelConfig]
+    adc: AdcConfig = field(default_factory=AdcConfig)
 
     def __post_init__(self) -> None:
         if not self.port.strip():
@@ -299,6 +340,28 @@ class ProcessedChannelSnapshot:
     converted_spectrum: SpectrumSnapshot
     processed_spectrum: SpectrumSnapshot
 
+    @property
+    def base_values(self) -> np.ndarray:
+        """Sinal base selecionado na configuração: counts ou tensão."""
+
+        return self.converted_values
+
+    @property
+    def last_base_value(self) -> float | None:
+        return self.last_converted_value
+
+    @property
+    def base_unit(self) -> str:
+        return self.conversion_output_unit
+
+    @property
+    def base_label(self) -> str:
+        return "tensão diferencial" if self.conversion_enabled else "contagem bruta"
+
+    @property
+    def base_spectrum(self) -> SpectrumSnapshot:
+        return self.converted_spectrum
+
 
 @dataclass(slots=True)
 class ProcessedAcquisitionSnapshot:
@@ -434,6 +497,8 @@ class SessionPreset:
     window_size: int
     signal_order_text: str
     channel_conversions: List[dict] = field(default_factory=list)
+    adc_reference_voltage_v: float = 2.5
+    adc_gain: int = 1
     path: Path = Path()
 
 

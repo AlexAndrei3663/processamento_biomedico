@@ -22,7 +22,7 @@ from serial_monitor.infrastructure.storage.hdf5_integrity import (
 class Hdf5SessionWriter:
     """Escritor incremental de uma sessão sincronizada multicanal."""
 
-    FORMAT_VERSION = 7
+    FORMAT_VERSION = 8
     METADATA_SCHEMA_VERSION = 2
 
     def __init__(
@@ -104,6 +104,10 @@ class Hdf5SessionWriter:
         h5.attrs["port"] = self.session.port
         h5.attrs["baudrate"] = self.session.baudrate
         h5.attrs["protocol_mode"] = self.session.protocol_mode.value
+        h5.attrs["adc_model"] = self.session.adc.model
+        h5.attrs["adc_input_mode"] = self.session.adc.input_mode
+        h5.attrs["adc_reference_voltage_v"] = self.session.adc.reference_voltage_v
+        h5.attrs["adc_gain"] = self.session.adc.gain
         h5.attrs["protocol_contract"] = json.dumps(
             {
                 "frame": "FRAME,<sequence_id>,<timestamp_us>,<v0>,...,<vN>",

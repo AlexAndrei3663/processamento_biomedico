@@ -18,7 +18,6 @@ from serial_monitor.application.storage_workers import CsvExportWorker, Integrit
 from serial_monitor.domain.models import AcquisitionSnapshot, SampleFrame, StoredSessionSummary
 from serial_monitor.infrastructure.serial.serial_reader import SerialReader
 from serial_monitor.infrastructure.storage.config_repository import ConfigRepository
-from serial_monitor.infrastructure.storage.conversion_profile_repository import ConversionProfileRepository
 from serial_monitor.infrastructure.storage.session_repository import SessionRepository
 from serial_monitor.processing.filter_pipeline import ProcessingService
 from serial_monitor.ui.main_window import MainWindow
@@ -36,7 +35,6 @@ class MainController(QObject):
         processing_service: ProcessingService,
         session_repository: SessionRepository,
         config_repository: ConfigRepository,
-        conversion_profile_repository: ConversionProfileRepository,
         recording_service: RecordingService,
         operational_monitor: OperationalMonitor,
         settings: RuntimeSettings,
@@ -49,7 +47,6 @@ class MainController(QObject):
         self.processing_service = processing_service
         self.session_repository = session_repository
         self.config_repository = config_repository
-        self.conversion_profile_repository = conversion_profile_repository
         self.recording_service = recording_service
         self.operational_monitor = operational_monitor
         self.settings = settings
@@ -60,6 +57,8 @@ class MainController(QObject):
         self._export_worker: CsvExportWorker | None = None
         self._integrity_worker: IntegrityCheckWorker | None = None
         self._last_frame_log_monotonic = 0.0
+        self._pending_session_validation = False
+        self._serial_connected = False
 
         self.view_timer = QTimer(self)
         self.view_timer.setInterval(self.settings.update_interval_ms)
@@ -74,7 +73,6 @@ class MainController(QObject):
         self.operational_timer.start()
 
         self._connect_signals()
-        self._load_conversion_profiles()
         self.window.update_recording_status(self.recording_service.status())
         self.refresh_operational_status()
         self._finalize_interrupted_sessions()
@@ -94,7 +92,7 @@ class MainController(QObject):
         menu.stored_button.clicked.connect(self.open_stored_page)
         menu.exit_button.clicked.connect(self.close_application)
 
-        config.validate_button.clicked.connect(self.validate_session)
+        config.validate_button.clicked.connect(self.request_session_validation)
         config.go_live_button.clicked.connect(self.go_live_from_config)
         config.back_menu_button.clicked.connect(self.window.show_menu)
         config.save_preset_button.clicked.connect(self.save_config_preset)
@@ -116,6 +114,8 @@ class MainController(QObject):
         live.cancel_recording_button.clicked.connect(self.cancel_recording)
         live.filter_toggled.connect(self.on_filter_toggled)
         live.display_mode_changed.connect(self.on_display_mode_changed)
+        live.plot_domain_changed.connect(self.on_plot_domain_changed)
+        live.active_channel_changed.connect(self.on_active_channel_changed)
 
         stored.open_config_button.clicked.connect(self.window.show_config)
         stored.open_live_button.clicked.connect(self.go_live_from_config)
@@ -132,19 +132,6 @@ class MainController(QObject):
         self.serial_reader.error_occurred.connect(self.on_error)
         self.serial_reader.protocol_error.connect(self.on_protocol_error)
         self.serial_reader.connection_changed.connect(self.on_connection_changed)
-
-    def _load_conversion_profiles(self) -> None:
-        try:
-            profiles = self.conversion_profile_repository.list_profiles()
-        except Exception as exc:
-            self.window.set_conversion_profiles([])
-            self.log("ERRO", f"Não foi possível carregar perfis de conversão: {exc}")
-            return
-        self.window.set_conversion_profiles(profiles)
-        self.log(
-            "CONVERSAO",
-            f"Perfis de conversão carregados: {len(profiles)}.",
-        )
 
     def log(self, level: str, message: str) -> None:
         self.window.append_log(level, message)
@@ -170,7 +157,6 @@ class MainController(QObject):
                 f"{report.platform} | Python {report.python} | CPUs={report.cpu_count} | "
                 f"update={self.settings.update_interval_ms} ms | max_plot_points={self.settings.max_plot_points} | "
                 f"data_dir={self.settings.data_dir} | "
-                f"conversion_profiles={self.settings.conversion_profiles_path} | "
                 f"operational_update={self.settings.operational_update_interval_ms} ms | "
                 f"minimum_free_disk={self.settings.minimum_free_disk_mb} MiB"
             ),
@@ -274,6 +260,8 @@ class MainController(QObject):
                 window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
                 signal_order_text=self.window.signal_order_text,
                 channel_conversions=self.window.channel_conversion_configs,
+                adc_reference_voltage_v=self.window.adc_reference_voltage_v,
+                adc_gain=self.window.adc_gain,
             )
         except Exception as exc:
             self.log("ERRO", f"Não foi possível salvar preset: {exc}")
@@ -343,6 +331,22 @@ class MainController(QObject):
                 self.window.update_stored_details(self._format_summary_details(summary))
                 return
 
+    @pyqtSlot()
+    def request_session_validation(self) -> None:
+        """Desconecta a serial antes de aplicar uma nova configuração."""
+
+        if self.serial_reader.isRunning() or self._serial_connected:
+            self._pending_session_validation = True
+            if self.recording_service.is_active:
+                self.finalize_recording(reason="configuration_changed")
+            self.log(
+                "CONFIG",
+                "Nova validação solicitada; desconectando a porta serial atual.",
+            )
+            self.disconnect_serial()
+            return
+        self.validate_session()
+
     @pyqtSlot(result=bool)
     def validate_session(self) -> bool:
         try:
@@ -353,6 +357,8 @@ class MainController(QObject):
                 window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
                 signal_order_text=self.window.signal_order_text,
                 channel_conversions=self.window.channel_conversion_configs,
+                adc_reference_voltage_v=self.window.adc_reference_voltage_v,
+                adc_gain=self.window.adc_gain,
             )
             self._stored_raw_snapshot = None
             self.acquisition_service.configure(self._session)
@@ -389,7 +395,9 @@ class MainController(QObject):
             (
                 f"Sessão válida: porta={self._session.port}, baudrate={self._session.baudrate}, "
                 f"fs={self._session.base_sample_rate_hz} Hz, janela={self._session.window_size}, "
-                f"canais=[{ordered_signals}]"
+                f"canais=[{ordered_signals}], ADC=ADS1256 diferencial, "
+                f"VREF={self._session.adc.reference_voltage_v:g} V, "
+                f"PGA={self._session.adc.gain}"
             ),
         )
         self.refresh_live_view(force=True)
@@ -398,7 +406,7 @@ class MainController(QObject):
 
     @pyqtSlot()
     def connect_serial(self) -> None:
-        if self.serial_reader.isRunning():
+        if self.serial_reader.isRunning() or self._serial_connected:
             self.log("INFO", "A serial já está conectada ou tentando conectar.")
             return
         if self._session is None and not self.validate_session():
@@ -410,17 +418,30 @@ class MainController(QObject):
         self.acquisition_service.start()
         self.window.clear_signal_tabs()
         self.refresh_live_view(force=True)
-        self.log("INFO", f"Tentando abrir porta serial {self._session.port} a {self._session.baudrate} baud...")
-        self.serial_reader.configure(self._session)
-        self.serial_reader.start()
+        self.window.update_connection_state(False, connecting=True)
+        self.log(
+            "INFO",
+            f"Tentando abrir porta serial {self._session.port} "
+            f"a {self._session.baudrate} baud...",
+        )
+        try:
+            self.serial_reader.configure(self._session)
+            self.serial_reader.start()
+        except Exception as exc:
+            self.window.update_connection_state(False)
+            self.acquisition_service.stop()
+            self.log("ERRO", f"Não foi possível iniciar a leitura serial: {exc}")
 
     @pyqtSlot()
     def disconnect_serial(self) -> None:
-        if not self.serial_reader.isRunning():
-            self.log("INFO", "A serial já está desconectada.")
+        if not self.serial_reader.isRunning() and not self._serial_connected:
+            self.window.update_connection_state(False)
             self.acquisition_service.stop()
-            self.refresh_live_view(force=True)
+            self.log("INFO", "A serial já está desconectada.")
             return
+        self.window.update_connection_state(
+            self._serial_connected, disconnecting=True
+        )
         self.log("INFO", "Encerrando leitura serial...")
         self.serial_reader.stop()
 
@@ -671,16 +692,28 @@ class MainController(QObject):
     @pyqtSlot(int, str)
     def on_display_mode_changed(self, channel_index: int, mode: str) -> None:
         labels = {
-            "raw": "bruto",
-            "converted": "convertido",
+            "base": "base",
             "processed": "processado",
         }
         label = labels.get(mode, mode)
         self.log("VIEW", f"Canal ch{channel_index}: visualização alterada para sinal {label}.")
         self.refresh_live_view(force=True)
 
+    @pyqtSlot(int, str)
+    def on_plot_domain_changed(self, channel_index: int, domain: str) -> None:
+        self.log("VIEW", f"Canal ch{channel_index}: domínio alterado para {domain}.")
+        self.refresh_live_view(force=True)
+
+    @pyqtSlot(int)
+    def on_active_channel_changed(self, _channel_index: int) -> None:
+        self._last_rendered_sequence_id = None
+        self.refresh_live_view(force=True)
+
     @pyqtSlot()
     def refresh_operational_status(self) -> None:
+        # O painel operacional só é redesenhado quando a tela ao vivo está visível.
+        if self.window.stack.currentWidget() is not self.window.live_page:
+            return
         status = self.recording_service.status()
         communication = self.acquisition_service.snapshot().communication
         resources = self.operational_monitor.sample()
@@ -689,9 +722,7 @@ class MainController(QObject):
             communication,
             resources,
             crc_available=False,
-            minimum_free_disk_bytes=self.settings.minimum_free_disk_mb
-            * 1024
-            * 1024,
+            minimum_free_disk_bytes=self.settings.minimum_free_disk_mb * 1024 * 1024,
         )
 
     @pyqtSlot()
@@ -703,20 +734,44 @@ class MainController(QObject):
             return
 
         raw_snapshot = self._stored_raw_snapshot or self.acquisition_service.snapshot()
+
+        # Na configuração, o resumo usa diretamente os buffers brutos. Isso evita
+        # conversões, filtros, métricas e FFT enquanto o gráfico não está visível.
+        if config_visible:
+            if force or raw_snapshot.frames_received != self._last_summary_frame_count:
+                self.window.update_buffer_summary(raw_snapshot)
+                self._last_summary_frame_count = raw_snapshot.frames_received
+            if not live_visible:
+                self._last_rendered_sequence_id = raw_snapshot.last_sequence_id
+                return
+
+        if not live_visible:
+            return
         if (
             not force
             and raw_snapshot.last_sequence_id == self._last_rendered_sequence_id
         ):
             return
 
-        processed_snapshot = self.processing_service.process(raw_snapshot)
-        if live_visible or force:
-            self.window.update_live_view(processed_snapshot)
+        channel_index = self.window.live_page.current_channel_index
+        selected = {channel_index} if channel_index is not None else set()
+        spectrum_modes: dict[int, str] = {}
+        if (
+            channel_index is not None
+            and self.window.live_page.current_plot_domain == "spectrum"
+        ):
+            spectrum_modes[channel_index] = (
+                "processed"
+                if self.window.live_page.current_display_mode == "processed"
+                else "base"
+            )
 
-        if force or processed_snapshot.frames_received != self._last_summary_frame_count:
-            self.window.update_buffer_summary(processed_snapshot)
-            self._last_summary_frame_count = processed_snapshot.frames_received
-
+        processed_snapshot = self.processing_service.process(
+            raw_snapshot,
+            channel_indexes=selected,
+            spectrum_modes=spectrum_modes,
+        )
+        self.window.update_live_view(processed_snapshot)
         self._last_rendered_sequence_id = raw_snapshot.last_sequence_id
 
     @pyqtSlot(object)
@@ -776,11 +831,14 @@ class MainController(QObject):
                 self.serial_reader.stop()
             raise
 
-    @pyqtSlot(str)
-    def on_protocol_error(self, message: str) -> None:
-        self.acquisition_service.record_invalid_frame()
-        self.refresh_live_view(force=True)
-        self.log("PROTOCOLO", f"Frame serial inválido: {message}")
+    @pyqtSlot(int, str)
+    def on_protocol_error(self, count: int, message: str) -> None:
+        self.acquisition_service.record_invalid_frame(count)
+        self.log(
+            "PROTOCOLO",
+            f"{count} frame(s) serial(is) inválido(s) no último intervalo. "
+            f"Exemplo: {message}",
+        )
 
     @pyqtSlot(str)
     def on_error(self, message: str) -> None:
@@ -788,14 +846,23 @@ class MainController(QObject):
 
     @pyqtSlot(bool)
     def on_connection_changed(self, connected: bool) -> None:
+        self._serial_connected = connected
         self.window.update_connection_state(connected)
-        if not connected:
+        if connected:
+            # O primeiro sequence_id e timestamp após cada conexão formam uma
+            # nova referência válida sem apagar os diagnósticos acumulados.
+            self.acquisition_service.begin_stream()
+        else:
             self.acquisition_service.stop()
             if self.recording_service.is_active:
                 self.finalize_recording(reason="serial_disconnected")
         state = "conectado" if connected else "desconectado"
         self.refresh_live_view(force=True)
         self.log("STATUS", f"Serial {state}.")
+
+        if not connected and self._pending_session_validation:
+            self._pending_session_validation = False
+            QTimer.singleShot(0, self.validate_session)
 
     def _format_summary_details(self, summary: StoredSessionSummary) -> str:
         csv_path = summary.metadata_path.parent / f"{summary.session_id}.csv"
@@ -853,13 +920,9 @@ def run() -> int:
     app = QApplication([sys.argv[0]])
     window = MainWindow(settings)
 
-    conversion_profile_repository = ConversionProfileRepository(
-        settings.conversion_profiles_path
-    )
-
     controller = MainController(
         window=window,
-        session_service=SessionService(conversion_profile_repository),
+        session_service=SessionService(),
         serial_reader=SerialReader(),
         acquisition_service=LiveAcquisitionService(),
         processing_service=ProcessingService(
@@ -867,7 +930,6 @@ def run() -> int:
         ),
         session_repository=SessionRepository(settings.sessions_dir),
         config_repository=ConfigRepository(settings.presets_dir),
-        conversion_profile_repository=conversion_profile_repository,
         recording_service=RecordingService(
             settings.sessions_dir,
             queue_capacity=settings.recording_queue_capacity,

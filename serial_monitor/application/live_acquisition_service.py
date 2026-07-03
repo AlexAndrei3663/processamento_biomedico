@@ -51,6 +51,11 @@ class LiveAcquisitionService:
     def stop(self) -> None:
         self._running = False
 
+    def begin_stream(self) -> None:
+        """Aceita o próximo frame como nova referência temporal e sequencial."""
+
+        self._communication.begin_stream()
+
     def clear_buffers(self, *, reset_stream_baseline: bool = False) -> None:
         """Limpa a janela móvel de visualização.
 
@@ -71,8 +76,8 @@ class LiveAcquisitionService:
         self.clear_buffers()
         self._communication.reset()
 
-    def record_invalid_frame(self) -> None:
-        self._communication.record_invalid_frame()
+    def record_invalid_frame(self, count: int = 1) -> None:
+        self._communication.record_invalid_frame(count)
 
     def record_checksum_error(self) -> None:
         self._communication.record_checksum_error()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime
 from typing import Any
 
@@ -9,8 +10,8 @@ from PyQt5.QtWidgets import QMainWindow, QStackedWidget
 
 from serial_monitor.app.runtime_settings import RuntimeSettings
 from serial_monitor.domain.models import (
+    AcquisitionSnapshot,
     CommunicationStats,
-    ConversionProfile,
     ProcessedAcquisitionSnapshot,
     RecordingStatus,
     SessionConfig,
@@ -31,6 +32,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: RuntimeSettings | None = None) -> None:
         super().__init__()
         self.settings = settings or RuntimeSettings()
+        self._pending_log_lines: deque[str] = deque(maxlen=1000)
         self.setWindowTitle("Monitor de Sinais Biomédicos")
         self.resize(1024, 600)
 
@@ -144,6 +146,7 @@ class MainWindow(QMainWindow):
 
     def show_config(self) -> None:
         self.stack.setCurrentIndex(WindowPageIndex.CONFIG_PAGE)
+        self._flush_pending_logs()
         self._show_status_message("Configuração da sessão")
 
     def show_live(self) -> None:
@@ -178,10 +181,19 @@ class MainWindow(QMainWindow):
     def append_log(self, level: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{timestamp}] [{level}] {message}"
-        self.config_page.log.appendPlainText(line)
-        self._show_status_message(f"[{level}] {message}", 5000)
+        if self.stack.currentWidget() is self.config_page:
+            self.config_page.log.appendPlainText(line)
+        else:
+            self._pending_log_lines.append(line)
+
+    def _flush_pending_logs(self) -> None:
+        if not self._pending_log_lines:
+            return
+        self.config_page.log.appendPlainText("\n".join(self._pending_log_lines))
+        self._pending_log_lines.clear()
 
     def clear_logs(self) -> None:
+        self._pending_log_lines.clear()
         self.config_page.log.clear()
 
     def build_signal_tabs(self, session: SessionConfig) -> None:
@@ -193,7 +205,7 @@ class MainWindow(QMainWindow):
     def update_live_view(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
         self.live_page.update_live_view(snapshot)
 
-    def update_buffer_summary(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
+    def update_buffer_summary(self, snapshot: AcquisitionSnapshot) -> None:
         self.config_page.update_buffer_summary(snapshot)
 
     def update_recording_status(self, status: RecordingStatus) -> None:
@@ -214,9 +226,24 @@ class MainWindow(QMainWindow):
             minimum_free_disk_bytes=minimum_free_disk_bytes,
         )
 
-    def update_connection_state(self, connected: bool) -> None:
-        self.live_page.connect_button.setEnabled(not connected)
-        self.live_page.disconnect_button.setEnabled(connected)
+    def update_connection_state(
+        self,
+        connected: bool,
+        *,
+        connecting: bool = False,
+        disconnecting: bool = False,
+    ) -> None:
+        busy = connecting or disconnecting
+        self.live_page.connect_button.setEnabled(not connected and not busy)
+        self.live_page.disconnect_button.setEnabled(connected and not disconnecting)
+        if disconnecting:
+            self.live_page.disconnect_button.setText("Desconectando...")
+        else:
+            self.live_page.disconnect_button.setText("Desconectar")
+        if connecting:
+            self.live_page.connect_button.setText("Conectando...")
+        else:
+            self.live_page.connect_button.setText("Conectar")
 
     def update_stored_sessions(self, summaries: list[StoredSessionSummary]) -> None:
         self.stored_page.set_sessions(summaries)
@@ -232,10 +259,6 @@ class MainWindow(QMainWindow):
 
     def finish_stored_export(self, message: str, *, success: bool) -> None:
         self.stored_page.finish_export(message, success=success)
-
-
-    def set_conversion_profiles(self, profiles: list[ConversionProfile]) -> None:
-        self.config_page.set_conversion_profiles(profiles)
 
     def update_presets(self, presets: list[SessionPreset]) -> None:
         self.config_page.set_presets(presets)
@@ -313,4 +336,12 @@ class MainWindow(QMainWindow):
     @property
     def channel_conversion_configs(self) -> list[dict]:
         return self.config_page.channel_conversion_configs
+
+    @property
+    def adc_reference_voltage_v(self) -> float:
+        return self.config_page.adc_reference_voltage_v
+
+    @property
+    def adc_gain(self) -> int:
+        return self.config_page.adc_gain
 

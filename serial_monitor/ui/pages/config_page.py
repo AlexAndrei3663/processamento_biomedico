@@ -5,7 +5,6 @@ from typing import Iterable
 import serial.tools.list_ports
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -16,6 +15,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QDoubleSpinBox,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
 
 from serial_monitor.app.signals_catalog import SIGNAL_PRESETS
 from serial_monitor.domain.enums import SignalType
-from serial_monitor.domain.models import ConversionProfile, ProcessedAcquisitionSnapshot
+from serial_monitor.domain.models import AcquisitionSnapshot
 from serial_monitor.infrastructure.storage.config_repository import SessionPreset
 
 
@@ -73,7 +73,6 @@ class ConfigPage(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self._conversion_profiles: list[ConversionProfile] = []
         self._channel_conversion_configs: list[dict] = []
         self._updating_conversion_editor = False
 
@@ -114,9 +113,14 @@ class ConfigPage(QWidget):
             lambda: self.update_interval_changed.emit(self.update_interval_spinbox.value())
         )
         self.channel_order_list.currentRowChanged.connect(self._sync_conversion_editor)
-        self.conversion_enabled_checkbox.toggled.connect(self._on_conversion_enabled_changed)
-        self.conversion_profile_selector.currentIndexChanged.connect(
-            self._on_conversion_profile_changed
+        self.channel_base_mode_selector.currentIndexChanged.connect(
+            self._on_channel_base_mode_changed
+        )
+        self.adc_reference_voltage_input.valueChanged.connect(
+            lambda _value: self._refresh_conversion_details()
+        )
+        self.adc_gain_selector.currentIndexChanged.connect(
+            lambda _index: self._refresh_conversion_details()
         )
 
         self.refresh_ports()
@@ -253,146 +257,124 @@ class ConfigPage(QWidget):
         root.addWidget(channels_group)
 
     def _build_conversion_group(self, root: QVBoxLayout) -> None:
-        conversion_group = QGroupBox("Conversão de unidades por canal")
+        conversion_group = QGroupBox("Conversão da saída do ADS1256")
         conversion_layout = QVBoxLayout(conversion_group)
 
         helper = QLabel(
-            "A conversão começa desabilitada. Selecione um canal na lista acima, "
-            "ative a conversão e escolha um perfil compatível. O valor bruto sempre "
-            "será preservado no arquivo da sessão."
+            "O microcontrolador envia a contagem bruta assinada do ADS1256. "
+            "O ganho e a referência são únicos para todos os canais. Para cada "
+            "canal, escolha se o sinal base será exibido em counts ou como tensão "
+            "diferencial AINP-AINN. O arquivo HDF5 preserva sempre os counts brutos."
         )
         helper.setWordWrap(True)
         conversion_layout.addWidget(helper)
 
-        form = QFormLayout()
+        adc_form = QFormLayout()
+        self.adc_reference_voltage_input = QDoubleSpinBox()
+        self.adc_reference_voltage_input.setRange(0.100, 5.000)
+        self.adc_reference_voltage_input.setDecimals(3)
+        self.adc_reference_voltage_input.setSingleStep(0.050)
+        self.adc_reference_voltage_input.setValue(2.500)
+        self.adc_reference_voltage_input.setSuffix(" V")
+        self.adc_reference_voltage_input.setAccelerated(True)
+
+        self.adc_gain_selector = QComboBox()
+        for gain in (1, 2, 4, 8, 16, 32, 64):
+            self.adc_gain_selector.addItem(f"PGA {gain}", gain)
+
         self.conversion_channel_label = QLabel("Nenhum canal selecionado")
-        self.conversion_enabled_checkbox = QCheckBox("Habilitar conversão neste canal")
-        self.conversion_profile_selector = QComboBox()
-        self.conversion_profile_selector.setEnabled(False)
-        self.conversion_details_label = QLabel("Conversão desabilitada.")
+        self.channel_base_mode_selector = QComboBox()
+        self.channel_base_mode_selector.addItem("Contagem bruta", "raw")
+        self.channel_base_mode_selector.addItem(
+            "Tensão diferencial na entrada do ADC", "voltage"
+        )
+        self.channel_base_mode_selector.setEnabled(False)
+
+        self.conversion_details_label = QLabel("Selecione um canal.")
         self.conversion_details_label.setWordWrap(True)
 
-        form.addRow("Canal", self.conversion_channel_label)
-        form.addRow(self.conversion_enabled_checkbox)
-        form.addRow("Perfil", self.conversion_profile_selector)
-        form.addRow("Detalhes", self.conversion_details_label)
-        conversion_layout.addLayout(form)
+        adc_form.addRow("ADC", QLabel("ADS1256 — entrada diferencial"))
+        adc_form.addRow("Tensão de referência", self.adc_reference_voltage_input)
+        adc_form.addRow("Ganho global", self.adc_gain_selector)
+        adc_form.addRow("Canal", self.conversion_channel_label)
+        adc_form.addRow("Sinal base", self.channel_base_mode_selector)
+        adc_form.addRow("Faixa nominal", self.conversion_details_label)
+        conversion_layout.addLayout(adc_form)
         root.addWidget(conversion_group)
 
     @property
     def channel_conversion_configs(self) -> list[dict]:
         return [dict(item) for item in self._channel_conversion_configs]
 
-    def set_conversion_profiles(self, profiles: list[ConversionProfile]) -> None:
-        self._conversion_profiles = list(profiles)
-        self._sync_conversion_editor(self.channel_order_list.currentRow())
+    @property
+    def adc_reference_voltage_v(self) -> float:
+        return float(self.adc_reference_voltage_input.value())
+
+    @property
+    def adc_gain(self) -> int:
+        value = self.adc_gain_selector.currentData()
+        return int(value) if value is not None else 1
 
     def _sync_conversion_editor(self, row: int) -> None:
         self._updating_conversion_editor = True
         try:
             valid = 0 <= row < self.channel_order_list.count()
-            self.conversion_enabled_checkbox.setEnabled(valid)
+            self.channel_base_mode_selector.setEnabled(valid)
             if not valid:
                 self.conversion_channel_label.setText("Nenhum canal selecionado")
-                self.conversion_enabled_checkbox.setChecked(False)
-                self.conversion_profile_selector.clear()
-                self.conversion_profile_selector.setEnabled(False)
-                self.conversion_details_label.setText("Conversão desabilitada.")
+                self.channel_base_mode_selector.setCurrentIndex(0)
+                self.conversion_details_label.setText("Selecione um canal.")
                 return
 
             signal_type = self._signal_type_at(row)
             preset = SIGNAL_PRESETS[signal_type]
             config = self._channel_conversion_configs[row]
             self.conversion_channel_label.setText(
-                f"ch{row} — {preset.display_name} | entrada bruta: {preset.raw_unit}"
+                f"ch{row} — {preset.display_name} | entrada: {preset.raw_unit}"
             )
-
-            compatible = [
-                profile
-                for profile in self._conversion_profiles
-                if (profile.signal_type is None or profile.signal_type == signal_type)
-                and profile.input_unit == preset.raw_unit
-            ]
-            self.conversion_profile_selector.clear()
-            for profile in compatible:
-                self.conversion_profile_selector.addItem(
-                    f"{profile.profile_id} → {profile.output_unit}",
-                    profile.profile_id,
-                )
-
-            enabled = bool(config.get("enabled", False))
-            profile_id = config.get("profile_id")
-            self.conversion_enabled_checkbox.setChecked(enabled)
-            if profile_id:
-                index = self.conversion_profile_selector.findData(profile_id)
-                self.conversion_profile_selector.setCurrentIndex(index)
-            self.conversion_profile_selector.setEnabled(
-                enabled and self.conversion_profile_selector.count() > 0
-            )
+            mode = str(config.get("mode", "raw"))
+            index = self.channel_base_mode_selector.findData(mode)
+            self.channel_base_mode_selector.setCurrentIndex(max(0, index))
             self._refresh_conversion_details()
         finally:
             self._updating_conversion_editor = False
 
-    def _on_conversion_enabled_changed(self, enabled: bool) -> None:
+    def _on_channel_base_mode_changed(self, _index: int) -> None:
         if self._updating_conversion_editor:
             return
         row = self.channel_order_list.currentRow()
         if not 0 <= row < len(self._channel_conversion_configs):
             return
-        profile_id = self.conversion_profile_selector.currentData()
+        mode = self.channel_base_mode_selector.currentData()
         self._channel_conversion_configs[row] = {
             "channel_index": row,
-            "enabled": bool(enabled),
-            "profile_id": str(profile_id) if enabled and profile_id else None,
-        }
-        self.conversion_profile_selector.setEnabled(
-            enabled and self.conversion_profile_selector.count() > 0
-        )
-        self._update_channel_item_label(row)
-        self._refresh_conversion_details()
-
-    def _on_conversion_profile_changed(self, _index: int) -> None:
-        if self._updating_conversion_editor:
-            return
-        row = self.channel_order_list.currentRow()
-        if not 0 <= row < len(self._channel_conversion_configs):
-            return
-        enabled = self.conversion_enabled_checkbox.isChecked()
-        profile_id = self.conversion_profile_selector.currentData()
-        self._channel_conversion_configs[row] = {
-            "channel_index": row,
-            "enabled": enabled,
-            "profile_id": str(profile_id) if enabled and profile_id else None,
+            "mode": str(mode or "raw"),
         }
         self._update_channel_item_label(row)
         self._refresh_conversion_details()
 
     def _refresh_conversion_details(self) -> None:
+        full_scale = (
+            2.0 * self.adc_reference_voltage_v / max(1, self.adc_gain)
+        )
         row = self.channel_order_list.currentRow()
         if not 0 <= row < len(self._channel_conversion_configs):
-            self.conversion_details_label.setText("Conversão desabilitada.")
-            return
-        config = self._channel_conversion_configs[row]
-        if not config.get("enabled"):
             self.conversion_details_label.setText(
-                "Conversão desabilitada: o valor recebido será exibido e armazenado "
-                "sem alteração."
+                f"Faixa diferencial nominal global: ±{full_scale:.6g} V."
             )
             return
-        profile_id = config.get("profile_id")
-        profile = next(
-            (item for item in self._conversion_profiles if item.profile_id == profile_id),
-            None,
-        )
-        if profile is None:
+        mode = str(self._channel_conversion_configs[row].get("mode", "raw"))
+        if mode == "voltage":
             self.conversion_details_label.setText(
-                "Selecione um perfil compatível antes de validar a sessão."
+                f"Sinal base em volts; faixa nominal: -{full_scale:.6g} V a "
+                f"+{full_scale:.6g} V. Conversão aplicada apenas à visualização "
+                "e ao processamento."
             )
-            return
-        self.conversion_details_label.setText(
-            f"Modelo: {profile.model.value} | {profile.input_unit} → "
-            f"{profile.output_unit} | {profile.description}"
-        )
+        else:
+            self.conversion_details_label.setText(
+                "Sinal base em counts assinados de 24 bits. A conversão para "
+                f"tensão permanece disponível com a faixa global ±{full_scale:.6g} V."
+            )
 
     def _signal_type_at(self, row: int) -> SignalType:
         item = self.channel_order_list.item(row)
@@ -443,6 +425,7 @@ class ConfigPage(QWidget):
         log_layout = QVBoxLayout(log_group)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(1000)
         self.log.setMinimumHeight(160)
         self.clear_log_button = QPushButton("Limpar log")
         log_layout.addWidget(self.log)
@@ -537,6 +520,8 @@ class ConfigPage(QWidget):
         self._select_combo_data(self.baudrate_selector, preset.baudrate)
         self._select_combo_data(self.sample_rate_selector, preset.base_sample_rate_hz)
         self.window_size_input.setValue(preset.window_size)
+        self.adc_reference_voltage_input.setValue(preset.adc_reference_voltage_v)
+        self._select_combo_data(self.adc_gain_selector, preset.adc_gain)
 
         signal_types = [
             SignalType.from_text(item)
@@ -558,8 +543,7 @@ class ConfigPage(QWidget):
         self._channel_conversion_configs.append(
             {
                 "channel_index": self.channel_order_list.count() - 1,
-                "enabled": False,
-                "profile_id": None,
+                "mode": "raw",
             }
         )
         self._refresh_channel_labels()
@@ -578,11 +562,13 @@ class ConfigPage(QWidget):
             item.setData(self.SIGNAL_TYPE_ROLE, signal_type.value)
             self.channel_order_list.addItem(item)
             source = source_configs[index] if index < len(source_configs) else {}
+            mode = str(source.get("mode", "")).strip().lower()
+            if mode not in {"raw", "voltage"}:
+                mode = "voltage" if bool(source.get("enabled", False)) else "raw"
             self._channel_conversion_configs.append(
                 {
                     "channel_index": index,
-                    "enabled": bool(source.get("enabled", False)),
-                    "profile_id": source.get("profile_id"),
+                    "mode": mode,
                 }
             )
         self._refresh_channel_labels()
@@ -625,7 +611,7 @@ class ConfigPage(QWidget):
             conversion = (
                 self._channel_conversion_configs[row]
                 if row < len(self._channel_conversion_configs)
-                else {"enabled": False, "profile_id": None}
+                else {"mode": "raw"}
             )
             conversion["channel_index"] = row
             self._update_channel_item_label(row)
@@ -642,15 +628,19 @@ class ConfigPage(QWidget):
         conversion = (
             self._channel_conversion_configs[row]
             if row < len(self._channel_conversion_configs)
-            else {"enabled": False}
+            else {"mode": "raw"}
         )
-        marker = " | conversão ativa" if conversion.get("enabled") else ""
+        marker = (
+            " | base: tensão"
+            if conversion.get("mode") == "voltage"
+            else " | base: counts"
+        )
         item.setText(
             f"ch{row} — {preset.display_name} ({signal_type.value}){marker}"
         )
 
 
-    def update_buffer_summary(self, snapshot: ProcessedAcquisitionSnapshot) -> None:
+    def update_buffer_summary(self, snapshot: AcquisitionSnapshot) -> None:
         if not snapshot.configured:
             self.buffer_summary.setPlainText("Aquisição ainda não configurada.")
             return
@@ -679,8 +669,8 @@ class ConfigPage(QWidget):
             channel = channel_snapshot.channel
             last_value = (
                 "--"
-                if channel_snapshot.last_processed_value is None
-                else f"{channel_snapshot.last_processed_value:g} {channel.unit}"
+                if channel_snapshot.last_value is None
+                else f"{channel_snapshot.last_value:g} {channel.raw_unit}"
             )
             lines.append(
                 f"  ch{channel.index} | {channel.display_name} ({channel.signal_type.value}) | "

@@ -13,6 +13,7 @@ import numpy as np
 from serial_monitor import PROTOCOL_VERSION, SOFTWARE_VERSION
 from serial_monitor.domain.enums import ConversionModel, ProtocolMode, SignalType
 from serial_monitor.domain.models import (
+    AdcConfig,
     AcquisitionSnapshot,
     ChannelBufferSnapshot,
     CommunicationStats,
@@ -39,7 +40,7 @@ class SessionRepository:
     DATA_SUFFIX = ".h5"
     PARTIAL_SUFFIX = ".partial.h5"
     FORMAT_VERSION = Hdf5SessionWriter.FORMAT_VERSION
-    SUPPORTED_FORMAT_VERSIONS = {4, 5, 6, 7}
+    SUPPORTED_FORMAT_VERSIONS = {4, 5, 6, 7, 8}
 
     def __init__(self, base_dir: str | Path = "data/sessions") -> None:
         self.base_dir = Path(base_dir)
@@ -536,6 +537,14 @@ class SessionRepository:
                 )
             )
 
+        adc = AdcConfig(
+            model=str(h5.attrs.get("adc_model", "ADS1256")),
+            input_mode=str(h5.attrs.get("adc_input_mode", "differential")),
+            reference_voltage_v=float(
+                h5.attrs.get("adc_reference_voltage_v", 2.5)
+            ),
+            gain=int(h5.attrs.get("adc_gain", 1)),
+        )
         return SessionConfig(
             port=str(h5.attrs.get("port", "stored-session")),
             baudrate=max(1, int(h5.attrs.get("baudrate", 1))),
@@ -545,6 +554,7 @@ class SessionRepository:
                 str(h5.attrs.get("protocol_mode", ProtocolMode.FRAME_CSV.value))
             ),
             channels=channels,
+            adc=adc,
         )
 
     @staticmethod

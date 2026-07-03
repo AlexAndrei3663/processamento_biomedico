@@ -2,27 +2,16 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from serial_monitor.domain.models import SignalChannelConfig, SpectrumSnapshot
 
 
 class SignalPlotWidget(QWidget):
-    """Gráfico de um canal no domínio do tempo ou da frequência.
+    """Gráfico leve com pan e zoom somente no eixo horizontal."""
 
-    A classe recebe vetores prontos para renderização. Ela não conhece serial,
-    parser, buffers, filtros ou FFT.
-
-    Para reduzir a carga de renderização na Raspberry Pi, o widget:
-
-    - limita a quantidade máxima de pontos enviados ao PyQtGraph;
-    - reconfigura os rótulos dos eixos somente ao trocar de domínio;
-    - altera o título somente quando o texto muda;
-    - reaplica limites e faixas apenas quando os dados relevantes mudam.
-
-    Essas otimizações afetam somente a visualização. Os dados mantidos nos
-    buffers e utilizados no armazenamento não são reduzidos.
-    """
+    follow_mode_changed = pyqtSignal(bool)
 
     def __init__(
         self,
@@ -31,93 +20,111 @@ class SignalPlotWidget(QWidget):
         fixed_x_window: float | None = None,
     ) -> None:
         super().__init__()
-
         self.channel = channel
         self.max_plot_points = max(100, int(max_plot_points))
         self.fixed_x_window = fixed_x_window
-
-        initial_title = f"{channel.display_name} - tempo"
-
-        # Estados utilizados para evitar reconfigurações repetidas do gráfico.
-        self._last_range_signature: tuple[object, ...] | None = None
         self._current_domain: str | None = None
-        self._last_title: str | None = initial_title
         self._current_y_unit: str | None = None
+        self._last_title: str | None = None
+        self._follow_latest = True
+        self._programmatic_range_change = False
+        self._range_initialized = False
+        self._last_x: np.ndarray = np.array([], dtype=float)
+        self._last_y: np.ndarray = np.array([], dtype=float)
 
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.plot_widget = pg.PlotWidget(title=initial_title)
+        self.plot_widget = pg.PlotWidget()
         self.plot_widget.setMinimumSize(0, 0)
         self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.plot_widget.showGrid(x=True, y=True, alpha=0.25)
         self.plot_widget.setClipToView(True)
         self.plot_widget.setDownsampling(auto=True, mode="peak")
-
         self.curve = self.plot_widget.plot([], [])
         layout.addWidget(self.plot_widget)
 
-        self._configure_horizontal_pan_only()
+        view_box = self.plot_widget.getViewBox()
+        view_box.setMouseEnabled(x=True, y=False)
+        view_box.setMouseMode(pg.ViewBox.PanMode)
+        view_box.disableAutoRange()
+        manual_signal = getattr(view_box, "sigRangeChangedManually", None)
+        if manual_signal is not None:
+            manual_signal.connect(self._on_manual_range_change)
+
+        self.plot_widget.setMenuEnabled(False)
+        self.plot_widget.hideButtons()
         self.set_time_axes()
 
-    def set_max_plot_points(self, max_plot_points: int) -> None:
-        """Define o máximo de pontos enviados ao PyQtGraph por atualização."""
+    @property
+    def follow_latest(self) -> bool:
+        return self._follow_latest
 
-        new_limit = max(100, int(max_plot_points))
-        if new_limit == self.max_plot_points:
+    def set_follow_latest(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._follow_latest:
+            if enabled:
+                self._apply_navigation_limits(self._last_x, self._last_y)
             return
+        self._follow_latest = enabled
+        self.follow_mode_changed.emit(enabled)
+        if enabled:
+            self._apply_navigation_limits(self._last_x, self._last_y)
 
-        self.max_plot_points = new_limit
-        self._last_range_signature = None
+    def zoom_horizontal(self, factor: float) -> None:
+        """Aplica zoom horizontal sem recalcular filtros, FFT ou dados."""
+
+        if factor <= 0 or self._last_x.size < 2:
+            return
+        finite_x = self._last_x[np.isfinite(self._last_x)]
+        if finite_x.size < 2:
+            return
+        data_min = max(0.0, float(np.min(finite_x))) if self._current_domain == "time" else float(np.min(finite_x))
+        data_max = float(np.max(finite_x))
+        data_span = max(data_max - data_min, np.finfo(float).eps)
+
+        current = self.plot_widget.getViewBox().viewRange()[0]
+        current_span = max(float(current[1] - current[0]), np.finfo(float).eps)
+        minimum_span = max(data_span / max(100.0, float(self.max_plot_points)), np.finfo(float).eps)
+        new_span = min(data_span, max(minimum_span, current_span * float(factor)))
+        center = (float(current[0]) + float(current[1])) / 2.0
+        left = max(data_min, min(center - new_span / 2.0, data_max - new_span))
+        right = left + new_span
+
+        self.set_follow_latest(False)
+        self._set_x_range(left, right)
+
+    def set_max_plot_points(self, max_plot_points: int) -> None:
+        self.max_plot_points = max(100, int(max_plot_points))
 
     def set_fixed_x_window(self, fixed_x_window: float | None) -> None:
-        """Define uma largura fixa para a janela horizontal, em segundos/Hz."""
-
-        if fixed_x_window == self.fixed_x_window:
-            return
-
         self.fixed_x_window = fixed_x_window
-        self._last_range_signature = None
+        self._range_initialized = False
 
     def set_time_axes(self, unit: str | None = None) -> None:
-        """Configura os eixos para apresentação no domínio do tempo."""
-
         unit = unit or self.channel.unit
         if self._current_domain == "time" and self._current_y_unit == unit:
             return
-
         self._current_domain = "time"
         self._current_y_unit = unit
-        self._last_range_signature = None
-
+        self._range_initialized = False
+        self._follow_latest = True
         self.plot_widget.setLabel("bottom", "Tempo", units="s")
-        self.plot_widget.setLabel(
-            "left",
-            self.channel.display_name,
-            units=unit,
-        )
+        self.plot_widget.setLabel("left", self.channel.display_name, units=unit)
 
     def set_spectrum_axes(self, unit: str | None = None) -> None:
-        """Configura os eixos para apresentação no domínio da frequência."""
-
         unit = unit or self.channel.unit
         if self._current_domain == "spectrum" and self._current_y_unit == unit:
             return
-
         self._current_domain = "spectrum"
         self._current_y_unit = unit
-        self._last_range_signature = None
-
+        self._range_initialized = False
+        self._follow_latest = True
         self.plot_widget.setLabel("bottom", "Frequência", units="Hz")
-        self.plot_widget.setLabel(
-            "left",
-            "Magnitude",
-            units=unit,
-        )
+        self.plot_widget.setLabel("left", "Magnitude", units=unit)
 
     def set_time_series(
         self,
@@ -126,23 +133,9 @@ class SignalPlotWidget(QWidget):
         title_suffix: str = "tempo",
         unit: str | None = None,
     ) -> None:
-        """Exibe uma série no domínio do tempo."""
-
         self.set_time_axes(unit)
         self._set_title(f"{self.channel.display_name} - {title_suffix}")
-
-        if values.size == 0 or x_seconds.size == 0:
-            self.clear()
-            return
-
-        if len(x_seconds) != len(values):
-            return
-
-        x_plot, y_plot = self._decimate(x_seconds, values)
-        self.curve.setData(x_plot, y_plot)
-
-        # Os limites são calculados sobre os dados efetivamente renderizados.
-        self._apply_horizontal_pan_only_limits(x_plot, y_plot)
+        self._set_data(x_seconds, values)
 
     def set_spectrum(
         self,
@@ -150,25 +143,9 @@ class SignalPlotWidget(QWidget):
         title_suffix: str = "espectro",
         unit: str | None = None,
     ) -> None:
-        """Exibe o espectro unilateral de magnitude do canal."""
-
         self.set_spectrum_axes(unit)
         self._set_title(f"{self.channel.display_name} - {title_suffix}")
-
-        if spectrum.frequencies_hz.size == 0 or spectrum.magnitudes.size == 0:
-            self.clear()
-            return
-
-        if len(spectrum.frequencies_hz) != len(spectrum.magnitudes):
-            return
-
-        x_plot, y_plot = self._decimate(
-            spectrum.frequencies_hz,
-            spectrum.magnitudes,
-        )
-        self.curve.setData(x_plot, y_plot)
-
-        self._apply_horizontal_pan_only_limits(x_plot, y_plot)
+        self._set_data(spectrum.frequencies_hz, spectrum.magnitudes)
 
     def set_series(
         self,
@@ -177,161 +154,106 @@ class SignalPlotWidget(QWidget):
         title_suffix: str = "tempo",
         unit: str | None = None,
     ) -> None:
-        """Compatibilidade interna com chamadas existentes."""
-
         self.set_time_series(x_seconds, values, title_suffix, unit=unit)
 
     def clear(self) -> None:
-        """Limpa somente a curva exibida."""
+        self._last_x = np.array([], dtype=float)
+        self._last_y = np.array([], dtype=float)
+        self._range_initialized = False
+        self.curve.setData(self._last_x, self._last_y)
 
-        self._last_range_signature = None
-        self.curve.setData(
-            np.array([], dtype=float),
-            np.array([], dtype=float),
-        )
+    def _set_data(self, x_values: np.ndarray, y_values: np.ndarray) -> None:
+        x = np.asarray(x_values, dtype=float)
+        y = np.asarray(y_values, dtype=float)
+        if x.size == 0 or y.size == 0 or x.size != y.size:
+            self.clear()
+            return
+        x_plot, y_plot = self._decimate(x, y)
+        self._last_x = x_plot
+        self._last_y = y_plot
+        self.curve.setData(x_plot, y_plot)
+        self._apply_navigation_limits(x_plot, y_plot)
 
     def _set_title(self, title: str) -> None:
-        """Atualiza o título somente quando seu conteúdo muda."""
-
         if title == self._last_title:
             return
-
         self._last_title = title
         self.plot_widget.setTitle(title)
 
     def _decimate(
-        self,
-        x_values: np.ndarray,
-        y_values: np.ndarray,
+        self, x_values: np.ndarray, y_values: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Reduz somente a quantidade de pontos enviados ao gráfico."""
-
-        if len(y_values) <= self.max_plot_points:
+        if y_values.size <= self.max_plot_points:
             return x_values, y_values
-
-        step = int(np.ceil(len(y_values) / self.max_plot_points))
+        step = int(np.ceil(y_values.size / self.max_plot_points))
         return x_values[::step], y_values[::step]
 
-    def _configure_horizontal_pan_only(self) -> None:
-        """Configura o gráfico para permitir somente pan horizontal."""
+    def _on_manual_range_change(self, *_args) -> None:
+        if self._programmatic_range_change:
+            return
+        if self._follow_latest:
+            self._follow_latest = False
+            self.follow_mode_changed.emit(False)
 
-        view_box = self.plot_widget.getViewBox()
-        view_box.setMouseEnabled(x=True, y=False)
-        view_box.setMouseMode(pg.ViewBox.PanMode)
-        view_box.disableAutoRange()
+    def _set_x_range(self, left: float, right: float) -> None:
+        self._programmatic_range_change = True
+        try:
+            self.plot_widget.getViewBox().setXRange(left, right, padding=0)
+        finally:
+            self._programmatic_range_change = False
 
-        self.plot_widget.setMenuEnabled(False)
-        self.plot_widget.hideButtons()
-
-    def _apply_horizontal_pan_only_limits(
-        self,
-        x_values: np.ndarray,
-        y_values: np.ndarray,
+    def _apply_navigation_limits(
+        self, x_values: np.ndarray, y_values: np.ndarray
     ) -> None:
-        """Trava zoom e escala vertical, permitindo apenas pan horizontal.
-
-        Os limites não são reaplicados quando o domínio, o número de pontos e
-        os extremos dos dados permanecem iguais à atualização anterior.
-        """
-
         finite_x = x_values[np.isfinite(x_values)]
         finite_y = y_values[np.isfinite(y_values)]
-
         if finite_x.size == 0 or finite_y.size == 0:
             return
 
         data_x_min = float(np.min(finite_x))
         data_x_max = float(np.max(finite_x))
-        data_y_min = float(np.min(finite_y))
-        data_y_max = float(np.max(finite_y))
-
-        # No domínio do tempo, a navegação nunca avança para valores negativos.
-        # O RingBuffer fornece tempo decorrido desde o primeiro timestamp válido
-        # do fluxo, portanto zero é a origem natural do eixo X.
         x_min = max(0.0, data_x_min) if self._current_domain == "time" else data_x_min
         x_max = max(x_min, data_x_max)
+        if x_max <= x_min:
+            x_max = x_min + (1.0 if self._current_domain == "time" else 0.5)
 
-        # Mantém uma referência visual em zero. Para sinais estritamente
-        # positivos o limite inferior é zero; para sinais que assumem valores
-        # negativos, o menor valor observado passa a ser o limite inferior.
+        data_y_min = float(np.min(finite_y))
+        data_y_max = float(np.max(finite_y))
         y_min = min(0.0, data_y_min)
         y_max = max(0.0, data_y_max)
-
-        x_span = x_max - x_min
+        if y_max <= y_min:
+            y_max = y_min + 1.0
         y_span = y_max - y_min
-
-        if x_span <= 0:
-            if self._current_domain == "time":
-                x_min = 0.0
-                x_max = max(data_x_max, 1.0)
-            else:
-                x_min -= 0.5
-                x_max += 0.5
-            x_span = x_max - x_min
-
-        if y_span <= 0:
-            # Uma série constante em zero ainda precisa de uma faixa visível.
-            # O limite inferior continua travado em zero.
-            y_min = min(0.0, data_y_min)
-            y_max = max(1.0, data_y_max)
-            y_span = y_max - y_min
-
-        if self.fixed_x_window is None:
-            x_window = x_span
-        else:
-            x_window = max(
-                float(self.fixed_x_window),
-                np.finfo(float).eps,
-            )
-            x_window = min(x_window, x_span)
-
-        range_signature = (
-            self._current_domain,
-            len(x_values),
-            round(x_min, 9),
-            round(x_max, 9),
-            round(y_min, 9),
-            round(y_max, 9),
-            round(x_window, 9),
-            self.fixed_x_window,
-        )
-
-        if range_signature == self._last_range_signature:
-            return
-
-        self._last_range_signature = range_signature
+        x_span = x_max - x_min
+        minimum_x_span = max(x_span / max(100.0, float(self.max_plot_points)), np.finfo(float).eps)
 
         view_box = self.plot_widget.getViewBox()
-
-        # A janela acompanha sempre o timestamp mais recente. Quando o buffer
-        # circular começa a sobrescrever amostras antigas, o eixo X continua
-        # avançando em vez de retornar a zero ou permanecer em uma faixa antiga.
-        view_x_min = x_max - x_window
-
-        view_x_min = max(
-            x_min,
-            min(view_x_min, x_max - x_window),
-        )
-        view_x_max = view_x_min + x_window
-
         view_box.setLimits(
-            # Limites de navegação horizontal.
             xMin=x_min,
             xMax=x_max,
-            # Trava o zoom horizontal.
-            minXRange=x_window,
-            maxXRange=x_window,
-            # Trava completamente o eixo Y.
+            minXRange=minimum_x_span,
+            maxXRange=x_span,
             yMin=y_min,
             yMax=y_max,
             minYRange=y_span,
             maxYRange=y_span,
         )
 
-        view_box.setRange(
-            xRange=(view_x_min, view_x_max),
-            yRange=(y_min, y_max),
-            padding=0,
-        )
+        self._programmatic_range_change = True
+        try:
+            view_box.setYRange(y_min, y_max, padding=0)
+        finally:
+            self._programmatic_range_change = False
 
-        view_box.disableAutoRange()
+        if not self._range_initialized:
+            window = x_span
+            if self.fixed_x_window is not None:
+                window = min(x_span, max(float(self.fixed_x_window), minimum_x_span))
+            self._set_x_range(x_max - window, x_max)
+            self._range_initialized = True
+            return
+
+        if self._follow_latest:
+            current = view_box.viewRange()[0]
+            window = max(minimum_x_span, min(x_span, float(current[1] - current[0])))
+            self._set_x_range(max(x_min, x_max - window), x_max)
