@@ -10,6 +10,7 @@ from serial_monitor.infrastructure.serial.protocol import (
     FrameCsvParser,
     FrameProtocolError,
     format_frame_csv,
+    is_ignorable_serial_line,
 )
 
 
@@ -79,6 +80,22 @@ def test_parser_rejects_values_outside_contract(line, expected_message):
 def test_format_frame_csv_uses_single_sequence_contract():
     line = format_frame_csv(5, 1_234_567, [1.0, 2.5])
     assert line == "FRAME,5,1234567,1.0,2.5"
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "",
+        "   ",
+        "# Inicializando ADS1256...",
+        "  # ADS1256 OK. Iniciando leitura.  ",
+    ],
+)
+def test_serial_diagnostic_lines_are_ignorable(line):
+    assert is_ignorable_serial_line(line)
+
+
+def test_frame_line_is_not_ignorable():
+    assert not is_ignorable_serial_line("FRAME,1,1000,1,2,3")
 
 
 def test_timestamp_can_be_estimated_from_sequence_on_ideal_grid():

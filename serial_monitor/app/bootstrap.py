@@ -128,7 +128,7 @@ class MainController(QObject):
         stored.verify_integrity_button.clicked.connect(self.verify_selected_session_integrity)
         stored.delete_selected_button.clicked.connect(self.delete_selected_stored_session)
 
-        self.serial_reader.frame_received.connect(self.on_frame_received)
+        self.serial_reader.frames_received.connect(self.on_frames_received)
         self.serial_reader.error_occurred.connect(self.on_error)
         self.serial_reader.protocol_error.connect(self.on_protocol_error)
         self.serial_reader.connection_changed.connect(self.on_connection_changed)
@@ -775,6 +775,12 @@ class MainController(QObject):
         self._last_rendered_sequence_id = raw_snapshot.last_sequence_id
 
     @pyqtSlot(object)
+    def on_frames_received(self, frames: tuple[SampleFrame]) -> None:
+        """Processa um lote recebido em uma única entrega Qt."""
+        for frame in frames:
+            self.on_frame_received(frame)
+
+    @pyqtSlot(object)
     def on_frame_received(self, frame: SampleFrame) -> None:
         self._stored_raw_snapshot = None
         try:
@@ -783,14 +789,9 @@ class MainController(QObject):
             self.log("ERRO", f"Frame recebido, mas não inserido nos buffers: {exc}")
             return
 
-        if accepted:
-            try:
-                self._enqueue_recording_frame(frame)
-            except RecordingQueueFullError:
-                return
-
-        snapshot = self.acquisition_service.snapshot()
         if not accepted:
+            # Caminho raro: copiar os buffers aqui é aceitável para diagnóstico.
+            snapshot = self.acquisition_service.snapshot()
             stats = snapshot.communication
             self.log(
                 "AVISO",
@@ -801,19 +802,31 @@ class MainController(QObject):
                 ),
             )
             return
+        
+        try:
+            self._enqueue_recording_frame(frame)
+        except RecordingQueueFullError:
+            return
 
         now = time.monotonic()
-        if snapshot.frames_received == 1 or now - self._last_frame_log_monotonic >= 5.0:
-            self._last_frame_log_monotonic = now
-            stats = snapshot.communication
-            self.log(
-                "FRAME",
-                (
-                    f"frames={snapshot.frames_received}, seq={snapshot.last_sequence_id}, "
-                    f"gaps={stats.gap_events}, ausentes={stats.missing_frames}, "
-                    f"inválidos={stats.invalid_frames}"
-                ),
-            )
+        first_log = self._last_frame_log_monotonic <= 0.0
+        log_interval_elapsed = now - self._last_frame_log_monotonic >= 5.0
+        if not first_log and not log_interval_elapsed:
+            return
+
+        self._last_frame_log_monotonic = now
+        snapshot = self.acquisition_service.snapshot()
+        stats = snapshot.communication
+        self.log(
+            "FRAME",
+            (
+                f"frames={snapshot.frames_received}, "
+                f"seq={snapshot.last_sequence_id}, "
+                f"gaps={stats.gap_events}, "
+                f"ausentes={stats.missing_frames}, "
+                f"inválidos={stats.invalid_frames}"
+            ),
+        )
 
     def _enqueue_recording_frame(self, frame: SampleFrame) -> None:
         if not self.recording_service.is_recording:

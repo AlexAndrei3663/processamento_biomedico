@@ -11,6 +11,17 @@ class FrameProtocolError(ValueError):
     """Erro de sintaxe ou domínio no protocolo serial textual."""
 
 
+def is_ignorable_serial_line(line: str) -> bool:
+    """Indica linhas de diagnóstico que não pertencem ao fluxo de frames.
+
+    O firmware prefixa mensagens de inicialização e diagnóstico com ``#``.
+    Linhas vazias também são ignoradas sem incrementar os contadores de erro.
+    """
+
+    clean_line = line.strip()
+    return not clean_line or clean_line.startswith("#")
+
+
 class FrameCsvParser:
     """Parser do protocolo textual multicanal vigente.
 
@@ -54,6 +65,7 @@ class FrameCsvParser:
             raise FrameProtocolError(
                 f"Quantidade de campos inválida. Esperado {expected_tokens}, recebido {len(tokens)}."
             )
+
         if tokens[0].upper() != self.header:
             raise FrameProtocolError("Cabeçalho FRAME ausente.")
 
@@ -72,6 +84,7 @@ class FrameCsvParser:
             values_in_order = [float(token) for token in tokens[3:]]
         except ValueError as exc:
             raise FrameProtocolError("Valores de canal inválidos no frame.") from exc
+
         if any(not math.isfinite(value) for value in values_in_order):
             raise FrameProtocolError("Valores NaN ou infinitos não são aceitos no frame.")
 
@@ -79,6 +92,7 @@ class FrameCsvParser:
             channel.index: value
             for channel, value in zip(session.channels, values_in_order, strict=True)
         }
+
         return ParsedFrame(
             frame=SampleFrame(
                 sequence_id=sequence_id,
@@ -96,8 +110,10 @@ def format_frame_csv(
 ) -> str:
     if not 0 <= sequence_id <= UINT32_MAX:
         raise ValueError("sequence_id fora da faixa uint32.")
+
     if not 0 <= timestamp_us <= UINT64_MAX:
         raise ValueError("timestamp_us fora da faixa uint64.")
+
     if any(not math.isfinite(value) for value in values):
         raise ValueError("Valores NaN ou infinitos não são aceitos.")
 
