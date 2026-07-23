@@ -338,6 +338,7 @@ class ProcessingService:
         *,
         channel_indexes: set[int] | None = None,
         spectrum_modes: Dict[int, str] | None = None,
+        display_modes: Dict[int, str] | None = None,
     ) -> ProcessedAcquisitionSnapshot:
         """Gera apenas os canais e espectros necessários para a tela atual.
 
@@ -360,7 +361,13 @@ class ProcessingService:
             if index not in selected_indexes:
                 continue
 
-            active_filters = self.active_filters_for(index)
+            enabled_filters = self.active_filters_for(index)
+            requested_display_mode = (
+                None if display_modes is None else display_modes.get(index)
+            )
+            filters_to_apply = (
+                [] if requested_display_mode == "base" else enabled_filters
+            )
             conversion = self.conversion_service.convert(
                 channel_snapshot.values,
                 channel_snapshot.channel,
@@ -368,8 +375,12 @@ class ProcessingService:
             processed_values, filter_status = self._process_channel_values(
                 conversion.values,
                 channel_snapshot.channel,
-                active_filters,
+                filters_to_apply,
             )
+            if requested_display_mode == "base" and enabled_filters:
+                filter_status = [
+                    "Filtros ativos preservados; cálculo suspenso no modo base."
+                ]
 
             last_converted_value = (
                 float(conversion.values[-1]) if conversion.values.size else None
@@ -430,7 +441,7 @@ class ProcessingService:
                 conversion_output_unit=conversion.output_unit,
                 conversion_out_of_input_range=conversion.out_of_input_range,
                 conversion_out_of_output_range=conversion.out_of_output_range,
-                active_filters=active_filters,
+                active_filters=enabled_filters,
                 filter_status=filter_status,
                 metrics=calculate_metrics(processed_values),
                 raw_spectrum=raw_spectrum,

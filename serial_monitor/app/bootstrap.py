@@ -9,6 +9,10 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from serial_monitor.app.runtime_settings import RuntimeSettings, parse_runtime_settings
 from serial_monitor.app.system_report import collect_system_report
+from serial_monitor.application.async_processing import (
+    LatestProcessingWorker,
+    ensure_thread_safe_processing_service,
+)
 from serial_monitor.application.conversion_service import ConversionService
 from serial_monitor.application.live_acquisition_service import LiveAcquisitionService
 from serial_monitor.application.operational_monitor import OperationalMonitor
@@ -44,7 +48,9 @@ class MainController(QObject):
         self.session_service = session_service
         self.serial_reader = serial_reader
         self.acquisition_service = acquisition_service
-        self.processing_service = processing_service
+        self.processing_service = ensure_thread_safe_processing_service(
+            processing_service
+        )
         self.session_repository = session_repository
         self.config_repository = config_repository
         self.recording_service = recording_service
@@ -59,6 +65,14 @@ class MainController(QObject):
         self._last_frame_log_monotonic = 0.0
         self._pending_session_validation = False
         self._serial_connected = False
+        self._latest_processing_request_id = 0
+        self._last_requested_sequence_id: int | None = None
+        self.processing_worker = LatestProcessingWorker(
+            self.processing_service, parent=self
+        )
+        self.processing_worker.result_ready.connect(self._on_processing_ready)
+        self.processing_worker.failed.connect(self._on_processing_failed)
+        self.processing_worker.start()
 
         self.view_timer = QTimer(self)
         self.view_timer.setInterval(self.settings.update_interval_ms)
@@ -175,6 +189,8 @@ class MainController(QObject):
     def shutdown(self) -> None:
         self.view_timer.stop()
         self.operational_timer.stop()
+        self.processing_worker.stop()
+        self.processing_worker.wait()
         if self._export_worker is not None and self._export_worker.isRunning():
             self._export_worker.request_cancel()
             self._export_worker.wait(3000)
@@ -735,8 +751,7 @@ class MainController(QObject):
 
         raw_snapshot = self._stored_raw_snapshot or self.acquisition_service.snapshot()
 
-        # Na configuração, o resumo usa diretamente os buffers brutos. Isso evita
-        # conversões, filtros, métricas e FFT enquanto o gráfico não está visível.
+        # Na configuração, o resumo continua usando diretamente o dado bruto.
         if config_visible:
             if force or raw_snapshot.frames_received != self._last_summary_frame_count:
                 self.window.update_buffer_summary(raw_snapshot)
@@ -747,32 +762,54 @@ class MainController(QObject):
 
         if not live_visible:
             return
+
         if (
             not force
-            and raw_snapshot.last_sequence_id == self._last_rendered_sequence_id
+            and raw_snapshot.last_sequence_id == self._last_requested_sequence_id
         ):
             return
 
         channel_index = self.window.live_page.current_channel_index
         selected = {channel_index} if channel_index is not None else set()
+        display_modes: dict[int, str] = {}
         spectrum_modes: dict[int, str] = {}
-        if (
-            channel_index is not None
-            and self.window.live_page.current_plot_domain == "spectrum"
-        ):
-            spectrum_modes[channel_index] = (
-                "processed"
-                if self.window.live_page.current_display_mode == "processed"
-                else "base"
-            )
 
-        processed_snapshot = self.processing_service.process(
-            raw_snapshot,
-            channel_indexes=selected,
-            spectrum_modes=spectrum_modes,
-        )
-        self.window.update_live_view(processed_snapshot)
-        self._last_rendered_sequence_id = raw_snapshot.last_sequence_id
+        if channel_index is not None:
+            display_mode = self.window.live_page.current_display_mode
+            display_modes[channel_index] = display_mode
+            if self.window.live_page.current_plot_domain == "spectrum":
+                spectrum_modes[channel_index] = (
+                    "processed" if display_mode == "processed" else "base"
+                )
+
+        try:
+            request_id = self.processing_worker.submit(
+                raw_snapshot,
+                channel_indexes=selected,
+                spectrum_modes=spectrum_modes,
+                display_modes=display_modes,
+            )
+        except RuntimeError:
+            return
+
+        self._latest_processing_request_id = request_id
+        self._last_requested_sequence_id = raw_snapshot.last_sequence_id
+
+    @pyqtSlot(int, object)
+    def _on_processing_ready(self, request_id: int, snapshot: object) -> None:
+        if request_id != self._latest_processing_request_id:
+            return
+        if self.window.stack.currentWidget() is not self.window.live_page:
+            return
+        self.window.update_live_view(snapshot)
+        self._last_rendered_sequence_id = getattr(snapshot, "last_sequence_id", None)
+
+    @pyqtSlot(int, str)
+    def _on_processing_failed(self, request_id: int, message: str) -> None:
+        if request_id != self._latest_processing_request_id:
+            return
+        self._last_requested_sequence_id = None
+        self.log("ERRO", f"Falha no processamento da visualização: {message}")
 
     @pyqtSlot(object)
     def on_frames_received(self, frames: tuple[SampleFrame, ...]) -> None:
