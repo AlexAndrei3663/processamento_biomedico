@@ -775,38 +775,37 @@ class MainController(QObject):
         self._last_rendered_sequence_id = raw_snapshot.last_sequence_id
 
     @pyqtSlot(object)
-    def on_frames_received(self, frames: tuple[SampleFrame]) -> None:
-        """Processa um lote recebido em uma única entrega Qt."""
-        for frame in frames:
-            self.on_frame_received(frame)
-
-    @pyqtSlot(object)
-    def on_frame_received(self, frame: SampleFrame) -> None:
-        self._stored_raw_snapshot = None
-        try:
-            accepted = self.acquisition_service.ingest_frame(frame)
-        except Exception as exc:
-            self.log("ERRO", f"Frame recebido, mas não inserido nos buffers: {exc}")
+    def on_frames_received(self, frames: tuple[SampleFrame, ...]) -> None:
+        """Aplica aquisição e gravação uma única vez por lote Qt."""
+        if not frames:
             return
 
-        if not accepted:
-            # Caminho raro: copiar os buffers aqui é aceitável para diagnóstico.
-            snapshot = self.acquisition_service.snapshot()
-            stats = snapshot.communication
+        self._stored_raw_snapshot = None
+        try:
+            accepted_frames = self.acquisition_service.ingest_frames(frames)
+        except Exception as exc:
+            self.log("ERRO", f"Lote recebido, mas não inserido nos buffers: {exc}")
+            return
+
+        rejected_count = len(frames) - len(accepted_frames)
+        if rejected_count:
+            stats = self.acquisition_service.snapshot().communication
             self.log(
                 "AVISO",
                 (
-                    f"Frame rejeitado: seq={frame.sequence_id}, "
-                    f"duplicados={stats.duplicate_frames}, fora_ordem={stats.out_of_order_frames}, "
+                    f"Lote com {len(frames)} frames: {len(accepted_frames)} aceitos, "
+                    f"{rejected_count} rejeitados; "
+                    f"duplicados={stats.duplicate_frames}, "
+                    f"fora_ordem={stats.out_of_order_frames}, "
                     f"timestamp_regressivo={stats.timestamp_regressions}"
                 ),
             )
-            return
-        
-        try:
-            self._enqueue_recording_frame(frame)
-        except RecordingQueueFullError:
-            return
+
+        if accepted_frames:
+            try:
+                self._enqueue_recording_frames(accepted_frames)
+            except RecordingQueueFullError:
+                return
 
         now = time.monotonic()
         first_log = self._last_frame_log_monotonic <= 0.0
@@ -828,11 +827,19 @@ class MainController(QObject):
             ),
         )
 
+    @pyqtSlot(object)
+    def on_frame_received(self, frame: SampleFrame) -> None:
+        """Entrada unitária mantida para integrações e testes legados."""
+        self.on_frames_received((frame,))
+
     def _enqueue_recording_frame(self, frame: SampleFrame) -> None:
+        self._enqueue_recording_frames((frame,))
+
+    def _enqueue_recording_frames(self, frames: tuple[SampleFrame, ...]) -> None:
         if not self.recording_service.is_recording:
             return
         try:
-            self.recording_service.enqueue_frame(frame)
+            self.recording_service.enqueue_frames(frames)
         except RecordingQueueFullError as exc:
             self.recording_service.fail(
                 str(exc),

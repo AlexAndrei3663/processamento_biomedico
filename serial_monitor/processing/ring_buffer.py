@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
 from serial_monitor.domain.models import ChannelBufferSnapshot, SignalChannelConfig
@@ -55,6 +57,58 @@ class RingBuffer:
 
         self._write_index = (self._write_index + 1) % self.capacity
         self._count = min(self._count + 1, self.capacity)
+
+    def append_batch(
+        self,
+        values: Sequence[float] | np.ndarray,
+        timestamps_us: Sequence[int] | np.ndarray,
+        sequence_ids: Sequence[int] | np.ndarray,
+    ) -> None:
+        """Insere várias amostras com no máximo duas cópias contíguas.
+
+        A origem temporal continua sendo o primeiro timestamp recebido desde o
+        último ``clear``. Quando o lote excede a capacidade, apenas as amostras
+        mais recentes permanecem na janela, sem alterar a continuidade do eixo X.
+        """
+        values_array = np.asarray(values, dtype=float).reshape(-1)
+        timestamps_array = np.asarray(timestamps_us, dtype=np.uint64).reshape(-1)
+        sequences_array = np.asarray(sequence_ids, dtype=np.uint32).reshape(-1)
+
+        batch_size = int(values_array.size)
+        if timestamps_array.size != batch_size or sequences_array.size != batch_size:
+            raise ValueError(
+                "Valores, timestamps e identificadores de sequência devem ter "
+                "o mesmo tamanho."
+            )
+        if batch_size == 0:
+            return
+
+        if self._time_origin_us is None:
+            self._time_origin_us = int(timestamps_array[0])
+
+        if batch_size >= self.capacity:
+            self._values[:] = values_array[-self.capacity :]
+            self._timestamps_us[:] = timestamps_array[-self.capacity :]
+            self._sequence_ids[:] = sequences_array[-self.capacity :]
+            self._write_index = 0
+            self._count = self.capacity
+            return
+
+        first_count = min(batch_size, self.capacity - self._write_index)
+        first_end = self._write_index + first_count
+
+        self._values[self._write_index:first_end] = values_array[:first_count]
+        self._timestamps_us[self._write_index:first_end] = timestamps_array[:first_count]
+        self._sequence_ids[self._write_index:first_end] = sequences_array[:first_count]
+
+        remaining = batch_size - first_count
+        if remaining:
+            self._values[:remaining] = values_array[first_count:]
+            self._timestamps_us[:remaining] = timestamps_array[first_count:]
+            self._sequence_ids[:remaining] = sequences_array[first_count:]
+
+        self._write_index = (self._write_index + batch_size) % self.capacity
+        self._count = min(self._count + batch_size, self.capacity)
 
     def _ordered_indices(self) -> np.ndarray:
         if self._count == 0:

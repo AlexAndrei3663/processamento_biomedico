@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import queue
 import shutil
 import threading
@@ -124,24 +126,43 @@ class RecordingService:
             return self.status()
 
     def enqueue_frame(self, frame: SampleFrame) -> None:
+        """Compatibilidade com produtores que ainda enviam um frame por chamada."""
+        self.enqueue_frames((frame,))
+
+    def enqueue_frames(self, frames: Sequence[SampleFrame]) -> None:
+        """Enfileira um lote com uma única atualização dos contadores."""
+        batch = tuple(frames)
+        if not batch:
+            return
+
         with self._lock:
             if self._state != RecordingState.RECORDING:
                 return
 
-        try:
-            self._queue.put_nowait(frame)
-        except queue.Full as exc:
-            message = (
-                "Fila de gravação saturada. A sessão foi interrompida para evitar "
-                "perda silenciosa de dados."
-            )
-            self.fail(message)
-            raise RecordingQueueFullError(message) from exc
+            available = self.queue_capacity - self._queue.qsize()
+            if len(batch) > available:
+                message = (
+                    "Fila de gravação saturada. A sessão foi interrompida para "
+                    "evitar perda silenciosa de dados."
+                )
+                self.fail(message)
+                raise RecordingQueueFullError(message)
 
-        with self._lock:
-            self._frames_enqueued += 1
+            try:
+                for frame in batch:
+                    self._queue.put_nowait(frame)
+            except queue.Full as exc:
+                message = (
+                    "Fila de gravação saturada durante a inserção do lote. "
+                    "A sessão foi interrompida para evitar perda silenciosa."
+                )
+                self.fail(message)
+                raise RecordingQueueFullError(message) from exc
+
+            self._frames_enqueued += len(batch)
             self._queue_high_watermark = max(
-                self._queue_high_watermark, self._queue.qsize()
+                self._queue_high_watermark,
+                self._queue.qsize(),
             )
 
     def finalize(
