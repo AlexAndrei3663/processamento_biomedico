@@ -27,6 +27,8 @@ from serial_monitor.processing.filter_pipeline import ProcessingService
 from serial_monitor.ui.main_window import MainWindow
 
 
+from serial_monitor.app.tcc_profile import TCC_PROFILE
+
 class MainController(QObject):
     """Controlador da aquisição, navegação e interface touch para Raspberry Pi."""
 
@@ -56,6 +58,7 @@ class MainController(QObject):
         self.recording_service = recording_service
         self.operational_monitor = operational_monitor
         self.settings = settings
+        self.operational_profile = TCC_PROFILE
         self._session = None
         self._stored_raw_snapshot: AcquisitionSnapshot | None = None
         self._last_summary_frame_count = -1
@@ -90,7 +93,8 @@ class MainController(QObject):
         self.window.update_recording_status(self.recording_service.status())
         self.refresh_operational_status()
         self._finalize_interrupted_sessions()
-        self._refresh_presets(auto_load_first=True)
+        self._refresh_presets(auto_load_first=False)
+        self._apply_operational_profile()
         self.refresh_stored_sessions()
         self.log("INFO", "Controlador inicializado.")
         self._log_startup_report()
@@ -212,9 +216,8 @@ class MainController(QObject):
 
     @pyqtSlot()
     def start_monitoring_from_menu(self) -> None:
-        if self._session is None:
+        if self._session is None and not self.validate_session():
             self.window.show_config()
-            self.log("INFO", "Configure e valide a sessão antes de iniciar o monitoramento.")
             return
         self._stored_raw_snapshot = None
         self.window.show_live()
@@ -252,6 +255,23 @@ class MainController(QObject):
             self.window.apply_preset(presets[0])
             self.log("CONFIG", f"Primeiro preset carregado automaticamente: {presets[0].name}.")
         self.log("CONFIG", f"Presets de configuração encontrados: {len(presets)}.")
+
+    def _apply_operational_profile(self) -> None:
+        current_port = self.window.selected_port
+        preset = self.operational_profile.to_preset(port=current_port)
+        self.window.apply_preset(preset)
+        self.window.setWindowTitle(
+            f"Monitor Biomédico — {self.operational_profile.name}"
+        )
+        self.log(
+            "CONFIG",
+            (
+                f"Perfil operacional ativo: {self.operational_profile.name}; "
+                f"fs={self.operational_profile.base_sample_rate_hz} Hz; "
+                f"janela={self.operational_profile.window_seconds} s; "
+                f"canais={self.operational_profile.expected_channel_count}."
+            ),
+        )
 
     def _finalize_interrupted_sessions(self) -> None:
         try:
@@ -369,15 +389,9 @@ class MainController(QObject):
     @pyqtSlot(result=bool)
     def validate_session(self) -> bool:
         try:
-            self._session = self.session_service.build_session(
+            self._session = self.operational_profile.build_session(
+                self.session_service,
                 port=self.window.selected_port,
-                baudrate=self._parse_positive_int(self.window.baudrate_text, "Baudrate"),
-                base_sample_rate_hz=self._parse_positive_int(self.window.sample_rate_text, "Taxa base"),
-                window_size=self._parse_positive_int(self.window.window_size_text, "Janela"),
-                signal_order_text=self.window.signal_order_text,
-                channel_conversions=self.window.channel_conversion_configs,
-                adc_reference_voltage_v=self.window.adc_reference_voltage_v,
-                adc_gain=self.window.adc_gain,
             )
             self._stored_raw_snapshot = None
             self.acquisition_service.configure(self._session)

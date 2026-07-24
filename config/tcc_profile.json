@@ -1,0 +1,57 @@
+{
+  "profile_version": 1,
+  "name": "TCC ECG/PPG - ADS1256",
+  "locked": true,
+  "baudrate": 115200,
+  "base_sample_rate_hz": 1000,
+  "window_seconds": 10,
+  "adc": {
+    "model": "ADS1256",
+    "input_mode": "differential",
+    "reference_voltage_v": 2.5,
+    "gain": 1
+  },
+  "protocol": {
+    "mode": "frame_csv",
+    "version": "frame_csv_v1",
+    "expected_channel_count": 4,
+    "supports_future_binary_transport": true
+  },
+  "firmware": {
+    "repository": "Tyrion1606/blackpill_ads1256-display",
+    "board": "BlackPill STM32F411",
+    "adc": "ADS1256",
+    "version": null,
+    "commit": null
+  },
+  "channels": [
+    {
+      "index": 0,
+      "signal_type": "ecg",
+      "display_name": "ECG 1",
+      "physical_input": "AIN0-AIN1",
+      "base_mode": "voltage"
+    },
+    {
+      "index": 1,
+      "signal_type": "ecg",
+      "display_name": "ECG 2",
+      "physical_input": "AIN2-AIN3",
+      "base_mode": "voltage"
+    },
+    {
+      "index": 2,
+      "signal_type": "ppg",
+      "display_name": "PPG",
+      "physical_input": "AIN4-AIN5",
+      "base_mode": "voltage"
+    },
+    {
+      "index": 3,
+      "signal_type": "outro",
+      "display_name": "Reserva",
+      "physical_input": "AIN6-AIN7",
+      "base_mode": "raw"
+    }
+  ]
+}
