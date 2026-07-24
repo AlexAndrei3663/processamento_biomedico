@@ -491,7 +491,6 @@ class MainController(QObject):
         try:
             status = self.recording_service.start(
                 self._session,
-                active_filters=self.processing_service.enabled_filters_snapshot(),
                 communication_baseline=self.acquisition_service.snapshot().communication,
             )
         except Exception as exc:
@@ -571,7 +570,7 @@ class MainController(QObject):
         self._last_rendered_sequence_id = None
         self.acquisition_service.configure(stored.session)
         self.processing_service.configure(stored.session)
-        self.processing_service.set_enabled_filters(stored.active_filters)
+        self.processing_service.set_enabled_filters({})
         self.window.build_signal_tabs(stored.session)
         self.window.show_live()
         self.refresh_live_view(force=True)

@@ -331,7 +331,8 @@ class SessionRepository:
             self._validate_structure(h5)
             summary = self._summary_from_open_file(h5, path)
             session = self._session_from_file(h5)
-            active_filters = self._active_filters_from_file(h5)
+            active_filters: Dict[int, List[str]] = {}
+            source_metadata = self._source_metadata_from_file(h5)
             total_frames = self._consistent_frame_count(h5)
             start_index = max(0, min(int(start_index), total_frames))
             end_index = max(start_index, min(int(end_index), total_frames))
@@ -402,6 +403,7 @@ class SessionRepository:
             session=session,
             snapshot=snapshot,
             active_filters=active_filters,
+            source_metadata=source_metadata,
             loaded_start_us=int(timestamps_us[0]) if len(timestamps_us) else None,
             loaded_end_us=int(timestamps_us[-1]) if len(timestamps_us) else None,
             loaded_frames=int(len(timestamps_us)),
@@ -533,7 +535,7 @@ class SessionRepository:
                     sample_rate_hz=float(source["sample_rate_hz"]),
                     conversion=ConversionConfig(enabled=enabled, profile_id=profile_id),
                     conversion_profile=profile,
-                    default_filters=list(source.get("default_filters", [])),
+                    default_filters=[],
                 )
             )
 
@@ -591,6 +593,19 @@ class SessionRepository:
     def _channels_metadata(h5: h5py.File) -> list[dict]:
         raw = h5.attrs.get("channels_json", "[]")
         return list(json.loads(str(raw)))
+
+    @staticmethod
+    def _source_metadata_from_file(h5: h5py.File) -> Dict[str, object]:
+        raw = h5.attrs.get("source_metadata_json", "{}")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(key): value for key, value in parsed.items()}
 
     @staticmethod
     def _active_filters_from_file(h5: h5py.File) -> Dict[int, List[str]]:

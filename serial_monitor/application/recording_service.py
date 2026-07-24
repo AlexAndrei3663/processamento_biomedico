@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import queue
 import shutil
@@ -83,7 +83,9 @@ class RecordingService:
         session: SessionConfig,
         active_filters: Dict[int, List[str]] | None = None,
         communication_baseline: CommunicationStats | None = None,
+        source_metadata: Mapping[str, object] | None = None,
     ) -> RecordingStatus:
+        _ = active_filters
         self._ensure_disk_space_available()
         with self._lock:
             if self._state in {RecordingState.RECORDING, RecordingState.FINALIZING}:
@@ -110,7 +112,7 @@ class RecordingService:
                 base_dir=self.base_dir,
                 session_id=session_id,
                 session=session,
-                active_filters=active_filters,
+                source_metadata=source_metadata,
                 chunk_size=self.batch_size,
             )
             self._writer = writer

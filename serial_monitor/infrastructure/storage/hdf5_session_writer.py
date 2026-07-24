@@ -23,7 +23,7 @@ class Hdf5SessionWriter:
     """Escritor incremental de uma sessão sincronizada multicanal."""
 
     FORMAT_VERSION = 8
-    METADATA_SCHEMA_VERSION = 2
+    METADATA_SCHEMA_VERSION = 3
 
     def __init__(
         self,
@@ -32,15 +32,23 @@ class Hdf5SessionWriter:
         session_id: str,
         session: SessionConfig,
         active_filters: Mapping[int, Sequence[str]] | None = None,
+        source_metadata: Mapping[str, object] | None = None,
         chunk_size: int = 256,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.session_id = session_id
         self.session = session
-        self.active_filters = {
-            int(index): list(filters)
-            for index, filters in (active_filters or {}).items()
+
+        _ = active_filters
+        self.source_metadata = {
+            str(key): value for key, value in (source_metadata or {}).items()
         }
+        try:
+            json.dumps(self.source_metadata, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "source_metadata deve conter somente valores serializáveis em JSON."
+            ) from exc
         self.chunk_size = max(1, int(chunk_size))
 
         self.partial_path = self.base_dir / f"{session_id}.partial.h5"
@@ -134,7 +142,6 @@ class Hdf5SessionWriter:
                         if channel.conversion_profile is not None
                         else None
                     ),
-                    "default_filters": list(channel.default_filters),
                 }
                 for channel in self.session.channels
             ],
@@ -150,11 +157,14 @@ class Hdf5SessionWriter:
         )
         h5.attrs["raw_data_policy"] = (
             "frames/raw_values contém exclusivamente os valores recebidos; "
-            "conversões e filtros são derivados reproduzíveis."
+            "nenhum sinal filtrado ou estado de filtro é persistido."
         )
-        h5.attrs["active_filters_json"] = json.dumps(
-            {str(index): list(filters) for index, filters in self.active_filters.items()},
+        h5.attrs["storage_policy"] = "raw_samples_only"
+        h5.attrs["processing_state_persisted"] = False
+        h5.attrs["source_metadata_json"] = json.dumps(
+            self.source_metadata,
             ensure_ascii=False,
+            sort_keys=True,
         )
         h5.attrs["communication_json"] = json.dumps({}, ensure_ascii=False)
 

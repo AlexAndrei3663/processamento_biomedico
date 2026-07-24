@@ -461,6 +461,7 @@ class StoredSessionData:
     session: SessionConfig
     snapshot: AcquisitionSnapshot
     active_filters: Dict[int, List[str]]
+    source_metadata: Dict[str, object] = field(default_factory=dict)
     loaded_start_us: int | None = None
     loaded_end_us: int | None = None
     loaded_frames: int = 0

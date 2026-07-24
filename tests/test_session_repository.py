@@ -93,8 +93,7 @@ def test_continuous_recording_preserves_complete_session_beyond_ring_buffer(tmp_
     assert loaded.snapshot.frames_received == 100
     assert loaded.snapshot.channels[0].sample_count == 5
     assert loaded.snapshot.channels[0].values[-1] == pytest.approx(100.0)
-    assert loaded.active_filters[0] == ["baseline"]
-    assert loaded.active_filters[1] == ["lowpass"]
+    assert loaded.active_filters == {}
 
     csv_path = repository.export_csv(listed[0].session_id, chunk_size=13)
     with csv_path.open(newline="", encoding="utf-8") as fp:

@@ -137,7 +137,7 @@ Estrutura principal:
 Características:
 
 - o HDF5 preserva as contagens recebidas, sem substituí-las por tensão ou valores filtrados;
-- VREF, ganho global do PGA, modo de exibição por canal e filtros ativos são registrados nos metadados;
+- VREF, ganho global do PGA, canais e contrato do protocolo são registrados nos metadados;
 - os datasets usam compressão GZIP leve;
 - a integridade é verificada por SHA-256 independente do tamanho dos lotes;
 - sessões interrompidas encontradas na inicialização são fechadas com o conteúdo confirmado disponível;
