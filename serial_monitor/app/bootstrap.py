@@ -127,6 +127,9 @@ class MainController(QObject):
         live.finalize_recording_button.clicked.connect(self.finalize_recording)
         live.cancel_recording_button.clicked.connect(self.cancel_recording)
         live.filter_toggled.connect(self.on_filter_toggled)
+        live.filter_parameter_changed.connect(
+            self.on_filter_parameter_changed
+        )
         live.display_mode_changed.connect(self.on_display_mode_changed)
         live.plot_domain_changed.connect(self.on_plot_domain_changed)
         live.active_channel_changed.connect(self.on_active_channel_changed)
@@ -705,6 +708,34 @@ class MainController(QObject):
         self.log("FILTRO", f"Canal ch{channel_index}: filtro '{filter_id}' {state}.")
         self.refresh_live_view(force=True)
 
+    # ETAPA3_CONFIGURABLE_FILTERS
+    @pyqtSlot(int, str, float)
+    def on_filter_parameter_changed(
+        self,
+        channel_index: int,
+        parameter_id: str,
+        value: float,
+    ) -> None:
+        try:
+            parameters = self.processing_service.set_filter_parameter(
+                channel_index,
+                parameter_id,
+                value,
+            )
+        except Exception as exc:
+            self.log("ERRO", f"Não foi possível alterar frequência de corte: {exc}")
+            return
+        labels = {
+            "highpass_cutoff_hz": "passa-altas",
+            "lowpass_cutoff_hz": "passa-baixas",
+        }
+        label = labels.get(parameter_id, parameter_id)
+        self.log(
+            "FILTRO",
+            f"Canal ch{channel_index}: corte do {label} = {value:g} Hz.",
+        )
+        _ = parameters
+        self.refresh_live_view(force=True)
     @pyqtSlot(int, str)
     def on_display_mode_changed(self, channel_index: int, mode: str) -> None:
         labels = {

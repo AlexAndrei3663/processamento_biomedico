@@ -6,7 +6,9 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QDoubleSpinBox,
     QFrame,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -25,7 +27,11 @@ from serial_monitor.domain.models import (
     SignalChannelConfig,
     SpectrumSnapshot,
 )
-from serial_monitor.processing.filter_pipeline import FILTER_DEFINITIONS
+from serial_monitor.processing.filter_config import FilterParameters
+from serial_monitor.processing.filter_pipeline import (
+    FILTER_DEFINITIONS,
+    FilterPipeline,
+)
 from serial_monitor.processing.spectrum import convert_spectrum_to_dbfs
 from serial_monitor.ui.widgets.signal_plot_widget import SignalPlotWidget
 
@@ -34,6 +40,7 @@ class SignalTab(QWidget):
     """Aba de um canal com sinal base, processado e navegação horizontal."""
 
     filter_toggled = pyqtSignal(int, str, bool)
+    filter_parameter_changed = pyqtSignal(int, str, float)
     display_mode_changed = pyqtSignal(int, str)
     plot_domain_changed = pyqtSignal(int, str)
 
@@ -64,6 +71,7 @@ class SignalTab(QWidget):
         self._fullscreen_mode = False
         self._normal_splitter_sizes = [740, 260]
         self.filter_checkboxes: Dict[str, QCheckBox] = {}
+        self.filter_parameter_controls: Dict[str, QDoubleSpinBox] = {}
         self.plot = SignalPlotWidget(channel, max_plot_points=max_plot_points)
 
         self.setMinimumSize(0, 0)
@@ -228,26 +236,57 @@ class SignalTab(QWidget):
         self.spectrum_scale_group.setEnabled(False)
         side_layout.addWidget(self.spectrum_scale_group)
 
-        filter_group = QGroupBox("Filtros pré-definidos")
+        filter_group = QGroupBox("Filtros")
         filter_layout = QVBoxLayout(filter_group)
-        if channel.default_filters:
-            for filter_id in channel.default_filters:
-                definition = FILTER_DEFINITIONS.get(filter_id)
-                checkbox = QCheckBox(
-                    definition.display_name if definition else filter_id
+        for filter_id in FilterPipeline.DISPLAY_ORDER:
+            definition = FILTER_DEFINITIONS.get(filter_id)
+            checkbox = QCheckBox(
+                definition.display_name if definition else filter_id
+            )
+            checkbox.setToolTip(
+                definition.description if definition else filter_id
+            )
+            checkbox.toggled.connect(
+                lambda checked, fid=filter_id: self._on_filter_checkbox_toggled(
+                    fid, checked
                 )
-                checkbox.setToolTip(
-                    definition.description if definition else filter_id
-                )
-                checkbox.toggled.connect(
-                    lambda checked, fid=filter_id: self.filter_toggled.emit(
-                        self.channel.index, fid, checked
-                    )
-                )
-                self.filter_checkboxes[filter_id] = checkbox
-                filter_layout.addWidget(checkbox)
-        else:
-            filter_layout.addWidget(QLabel("Nenhum filtro pré-definido."))
+            )
+            self.filter_checkboxes[filter_id] = checkbox
+            filter_layout.addWidget(checkbox)
+
+        cutoff_group = QGroupBox("Frequências de corte")
+        cutoff_layout = QFormLayout(cutoff_group)
+        defaults = FilterParameters.defaults_for_sample_rate(channel.sample_rate_hz)
+        cutoff_limit = max(0.002, channel.sample_rate_hz * 0.49)
+
+        self.highpass_cutoff_spin = QDoubleSpinBox()
+        self.highpass_cutoff_spin.setDecimals(2)
+        self.highpass_cutoff_spin.setRange(0.001, cutoff_limit)
+        self.highpass_cutoff_spin.setSingleStep(0.10)
+        self.highpass_cutoff_spin.setSuffix(" Hz")
+        self.highpass_cutoff_spin.setValue(defaults.highpass_cutoff_hz)
+
+        self.lowpass_cutoff_spin = QDoubleSpinBox()
+        self.lowpass_cutoff_spin.setDecimals(2)
+        self.lowpass_cutoff_spin.setRange(0.002, cutoff_limit)
+        self.lowpass_cutoff_spin.setSingleStep(1.00)
+        self.lowpass_cutoff_spin.setSuffix(" Hz")
+        self.lowpass_cutoff_spin.setValue(defaults.lowpass_cutoff_hz)
+
+        self.filter_parameter_controls = {
+            "highpass_cutoff_hz": self.highpass_cutoff_spin,
+            "lowpass_cutoff_hz": self.lowpass_cutoff_spin,
+        }
+        cutoff_layout.addRow("Passa-altas:", self.highpass_cutoff_spin)
+        cutoff_layout.addRow("Passa-baixas:", self.lowpass_cutoff_spin)
+        filter_layout.addWidget(cutoff_group)
+
+        self.highpass_cutoff_spin.valueChanged.connect(
+            lambda value: self._on_cutoff_changed("highpass_cutoff_hz", value)
+        )
+        self.lowpass_cutoff_spin.valueChanged.connect(
+            lambda value: self._on_cutoff_changed("lowpass_cutoff_hz", value)
+        )
         side_layout.addWidget(filter_group)
 
         metrics_group = QGroupBox("Métricas do processado")
@@ -303,6 +342,57 @@ class SignalTab(QWidget):
         self.follow_signal_button.toggled.connect(self.plot.set_follow_latest)
         self.plot.follow_mode_changed.connect(self._set_follow_button_state)
 
+    # ETAPA3_CONFIGURABLE_FILTERS
+    def _on_filter_checkbox_toggled(self, filter_id: str, checked: bool) -> None:
+        self.filter_toggled.emit(self.channel.index, filter_id, checked)
+        if filter_id in {"highpass", "lowpass"}:
+            highpass = self.filter_checkboxes.get("highpass")
+            lowpass = self.filter_checkboxes.get("lowpass")
+            bandpass = self.filter_checkboxes.get("bandpass")
+            if highpass is not None and lowpass is not None and bandpass is not None:
+                bandpass.blockSignals(True)
+                bandpass.setChecked(highpass.isChecked() and lowpass.isChecked())
+                bandpass.blockSignals(False)
+
+    def _on_cutoff_changed(self, parameter_id: str, value: float) -> None:
+        highpass = float(self.highpass_cutoff_spin.value())
+        lowpass = float(self.lowpass_cutoff_spin.value())
+        step = 0.01
+
+        if parameter_id == "highpass_cutoff_hz" and highpass >= lowpass:
+            adjusted_lowpass = min(
+                self.lowpass_cutoff_spin.maximum(), highpass + step
+            )
+            if adjusted_lowpass <= highpass:
+                self.highpass_cutoff_spin.blockSignals(True)
+                self.highpass_cutoff_spin.setValue(max(0.001, lowpass - step))
+                self.highpass_cutoff_spin.blockSignals(False)
+                value = self.highpass_cutoff_spin.value()
+            else:
+                self.lowpass_cutoff_spin.blockSignals(True)
+                self.lowpass_cutoff_spin.setValue(adjusted_lowpass)
+                self.lowpass_cutoff_spin.blockSignals(False)
+                self.filter_parameter_changed.emit(
+                    self.channel.index,
+                    "lowpass_cutoff_hz",
+                    adjusted_lowpass,
+                )
+        elif parameter_id == "lowpass_cutoff_hz" and lowpass <= highpass:
+            adjusted_highpass = max(0.001, lowpass - step)
+            self.highpass_cutoff_spin.blockSignals(True)
+            self.highpass_cutoff_spin.setValue(adjusted_highpass)
+            self.highpass_cutoff_spin.blockSignals(False)
+            self.filter_parameter_changed.emit(
+                self.channel.index,
+                "highpass_cutoff_hz",
+                adjusted_highpass,
+            )
+
+        self.filter_parameter_changed.emit(
+            self.channel.index,
+            parameter_id,
+            float(value),
+        )
     @property
     def requires_spectrum(self) -> bool:
         return self.plot_domain == self.SPECTRUM_DOMAIN
@@ -429,8 +519,13 @@ class SignalTab(QWidget):
 
         active = set(snapshot.active_filters)
         for filter_id, checkbox in self.filter_checkboxes.items():
+            is_active = (
+                {"highpass", "lowpass"}.issubset(active)
+                if filter_id == "bandpass"
+                else filter_id in active
+            )
             checkbox.blockSignals(True)
-            checkbox.setChecked(filter_id in active)
+            checkbox.setChecked(is_active)
             checkbox.blockSignals(False)
         if snapshot.active_filters:
             names = [

@@ -41,6 +41,7 @@ class LivePage(QWidget):
     """
 
     filter_toggled = pyqtSignal(int, str, bool)
+    filter_parameter_changed = pyqtSignal(int, str, float)
     display_mode_changed = pyqtSignal(int, str)
     plot_domain_changed = pyqtSignal(int, str)
     active_channel_changed = pyqtSignal(int)
@@ -298,6 +299,9 @@ class LivePage(QWidget):
                 adc=session.adc,
             )
             tab.filter_toggled.connect(self.filter_toggled.emit)
+            tab.filter_parameter_changed.connect(
+                self.filter_parameter_changed.emit
+            )
             tab.display_mode_changed.connect(self.display_mode_changed.emit)
             tab.plot_domain_changed.connect(self.plot_domain_changed.emit)
             tab.set_fullscreen_mode(self._fullscreen_layout)
