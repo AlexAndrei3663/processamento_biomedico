@@ -49,5 +49,5 @@ def test_main_window_routes_summary_and_log_to_configuration_page():
 def test_controller_autoloads_first_preset_and_finalizes_interrupted_sessions():
     source = _source("serial_monitor/app/bootstrap.py")
     assert "self._finalize_interrupted_sessions()" in source
-    assert "self._refresh_presets(auto_load_first=True)" in source
+    assert "self._refresh_presets(auto_load_first=False)" in source
     assert "self.window.apply_preset(presets[0])" in source

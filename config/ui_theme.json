@@ -1,0 +1,21 @@
+{
+  "theme": "pipboy",
+  "font_size_pt": 10,
+  "plot_line_width": 1.5,
+  "plot_grid_alpha": 0.22,
+  "colors": {
+    "background": "#050B06",
+    "panel": "#09130A",
+    "panel_alt": "#0D1B0E",
+    "foreground": "#9BFF83",
+    "foreground_dim": "#5FAE55",
+    "accent": "#B6FF93",
+    "border": "#3F8F3A",
+    "selection": "#173D18",
+    "warning": "#FFCB63",
+    "critical": "#FF6B5F",
+    "disabled": "#39503A",
+    "plot_secondary": "#FFCB63",
+    "plot_tertiary": "#8ED8FF"
+  }
+}

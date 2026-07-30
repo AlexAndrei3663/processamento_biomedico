@@ -26,6 +26,11 @@ from serial_monitor.ui.pages.menu_page import MenuPage
 from serial_monitor.ui.pages.stored_page import StoredPage
 
 
+from serial_monitor.ui.themes import (
+    apply_application_theme,
+    style_plot_widgets,
+)
+
 class MainWindow(QMainWindow):
     """Janela principal com navegação por páginas."""
 
@@ -36,81 +41,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Monitor de Sinais Biomédicos")
         self.resize(1024, 600)
 
-        self.setStyleSheet(
-            """
-            QPushButton {
-                min-height: 46px;
-                padding: 7px 12px;
-                font-size: 15px;
-                font-weight: 600;
-            }
-            QComboBox, QSpinBox, QDoubleSpinBox {
-                min-height: 42px;
-                padding: 4px 8px;
-                font-size: 14px;
-            }
-            QListWidget {
-                font-size: 15px;
-            }
-            QListWidget::item {
-                min-height: 38px;
-                padding: 5px;
-            }
-            QTabBar::tab {
-                min-height: 40px;
-                min-width: 105px;
-                padding: 6px 10px;
-                font-size: 14px;
-            }
-            QCheckBox, QRadioButton {
-                min-height: 36px;
-                spacing: 10px;
-                font-size: 14px;
-            }
-            QCheckBox::indicator, QRadioButton::indicator {
-                width: 24px;
-                height: 24px;
-            }
-            QGroupBox {
-                font-size: 14px;
-                font-weight: 600;
-                margin-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
-            }
-
-            /* A página ao vivo precisa caber integralmente em 1024 x 600. */
-            QWidget#livePage QPushButton {
-                min-height: 36px;
-                max-height: 40px;
-                padding: 3px 7px;
-                font-size: 13px;
-            }
-            QWidget#livePage QTabBar::tab {
-                min-height: 32px;
-                min-width: 90px;
-                padding: 4px 8px;
-                font-size: 13px;
-            }
-            QWidget#livePage QCheckBox,
-            QWidget#livePage QRadioButton {
-                min-height: 32px;
-                spacing: 8px;
-                font-size: 13px;
-            }
-            QWidget#livePage QCheckBox::indicator,
-            QWidget#livePage QRadioButton::indicator {
-                width: 22px;
-                height: 22px;
-            }
-            QWidget#livePage QLabel {
-                font-size: 12px;
-            }
-            """
-        )
+        apply_application_theme(self)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -198,6 +129,7 @@ class MainWindow(QMainWindow):
 
     def build_signal_tabs(self, session: SessionConfig) -> None:
         self.live_page.build_signal_tabs(session, max_plot_points=self.settings.max_plot_points)
+        style_plot_widgets(self.live_page)
 
     def clear_signal_tabs(self) -> None:
         self.live_page.clear_signal_tabs()
