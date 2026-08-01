@@ -36,6 +36,8 @@ from serial_monitor.processing.spectrum import convert_spectrum_to_dbfs
 from serial_monitor.ui.widgets.signal_plot_widget import SignalPlotWidget
 
 
+from serial_monitor.ui.layouts.simplified_signal_controls import apply_simplified_signal_controls
+
 class SignalTab(QWidget):
     """Aba de um canal com sinal base, processado e navegação horizontal."""
 
@@ -341,6 +343,7 @@ class SignalTab(QWidget):
         self.zoom_out_button.clicked.connect(lambda: self.plot.zoom_horizontal(1.40))
         self.follow_signal_button.toggled.connect(self.plot.set_follow_latest)
         self.plot.follow_mode_changed.connect(self._set_follow_button_state)
+        self._simplified_controls = apply_simplified_signal_controls(self)
 
     # ETAPA3_CONFIGURABLE_FILTERS
     def _on_filter_checkbox_toggled(self, filter_id: str, checked: bool) -> None:

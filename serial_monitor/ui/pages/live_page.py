@@ -26,6 +26,8 @@ from serial_monitor.domain.models import (
 from serial_monitor.ui.widgets.signal_tab import SignalTab
 
 
+from serial_monitor.ui.layouts.operational_dashboard import apply_operational_dashboard
+
 class LivePage(QWidget):
     """Página de visualização ao vivo para telas de 1024 x 600 pixels.
 
@@ -74,6 +76,7 @@ class LivePage(QWidget):
         _ = update_interval_ms
 
         self.fullscreen_button.clicked.connect(self.fullscreen_requested.emit)
+        self._operational_dashboard = apply_operational_dashboard(self)
 
     def _build_header(self, root: QVBoxLayout) -> None:
         self.header_widget = QWidget()
