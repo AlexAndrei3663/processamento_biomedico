@@ -2,7 +2,7 @@
   "profile_version": 1,
   "name": "TCC ECG/PPG - ADS1256",
   "locked": true,
-  "baudrate": 115200,
+  "baudrate": 230400,
   "base_sample_rate_hz": 1000,
   "window_seconds": 10,
   "adc": {
