@@ -2,10 +2,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-xcb}
+BIOMED_UPDATE_INTERVAL_MS=${BIOMED_UPDATE_INTERVAL_MS:-250}
+BIOMED_MAX_PLOT_POINTS=${BIOMED_MAX_PLOT_POINTS:-2000}
+BIOMED_RECORDING_QUEUE_CAPACITY=${BIOMED_RECORDING_QUEUE_CAPACITY:-8192}
+BIOMED_RECORDING_BATCH_SIZE=${BIOMED_RECORDING_BATCH_SIZE:-512}
+BIOMED_RECORDING_FLUSH_INTERVAL_MS=${BIOMED_RECORDING_FLUSH_INTERVAL_MS:-2000}
+BIOMED_OPERATIONAL_UPDATE_INTERVAL_MS=${BIOMED_OPERATIONAL_UPDATE_INTERVAL_MS:-2000}
 python3 main.py \
   --fullscreen \
-  --update-interval-ms 150 \
-  --max-plot-points 3000 \
-  --recording-queue-capacity 8192 \
-  --recording-batch-size 256 \
-  --recording-flush-interval-ms 1000
+  --update-interval-ms "$BIOMED_UPDATE_INTERVAL_MS" \
+  --max-plot-points "$BIOMED_MAX_PLOT_POINTS" \
+  --recording-queue-capacity "$BIOMED_RECORDING_QUEUE_CAPACITY" \
+  --recording-batch-size "$BIOMED_RECORDING_BATCH_SIZE" \
+  --recording-flush-interval-ms "$BIOMED_RECORDING_FLUSH_INTERVAL_MS" \
+  --operational-update-interval-ms "$BIOMED_OPERATIONAL_UPDATE_INTERVAL_MS"

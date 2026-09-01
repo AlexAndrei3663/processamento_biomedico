@@ -32,6 +32,8 @@ class SerialReader(QThread):
 
     FRAME_BATCH_SIZE = 20
     FRAME_BATCH_MAX_LATENCY_S = 0.020
+    MAX_LINE_BYTES = 256
+    INPUT_BUFFER_BYTES = 262_144
 
     def __init__(self, parser: FrameCsvParser | None = None):
         super().__init__()
@@ -77,6 +79,40 @@ class SerialReader(QThread):
         self.frames_received.emit(tuple(pending_frames))
         pending_frames.clear()
 
+    @classmethod
+    def _decode_line(cls, raw_line: bytes) -> str:
+        if len(raw_line) >= cls.MAX_LINE_BYTES and not raw_line.endswith(b"\n"):
+            raise FrameProtocolError(
+                f"Linha serial excede {cls.MAX_LINE_BYTES} bytes.",
+                category="line_length",
+            )
+        try:
+            return raw_line.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise FrameProtocolError(
+                "Linha serial contém bytes UTF-8 inválidos.",
+                category="encoding",
+            ) from exc
+
+    @classmethod
+    def _configure_input_buffer(cls, port: object) -> bool:
+        set_buffer_size = getattr(port, "set_buffer_size", None)
+        if not callable(set_buffer_size):
+            return False
+        try:
+            set_buffer_size(rx_size=cls.INPUT_BUFFER_BYTES)
+            return True
+        except (AttributeError, NotImplementedError, OSError, serial.SerialException):
+            return False
+
+    @staticmethod
+    def _format_protocol_summary(counts: dict[str, int], last_message: str) -> str:
+        summary = ", ".join(
+            f"{category}={count}"
+            for category, count in sorted(counts.items())
+        )
+        return f"{summary}. Último erro: {last_message}" if summary else last_message
+
     def run(self) -> None:
         if self._session is None:
             self.error_occurred.emit("Sessão serial não configurada.")
@@ -85,6 +121,7 @@ class SerialReader(QThread):
         self._running = True
         invalid_count = 0
         invalid_total = 0
+        invalid_by_category: dict[str, int] = {}
         valid_total = 0
         last_invalid_message = ""
         last_report = time.monotonic()
@@ -99,6 +136,7 @@ class SerialReader(QThread):
                 self._session.baudrate,
                 timeout=0.1,
             )
+            self._configure_input_buffer(port)
 
             with self._serial_lock:
                 self._serial_port = port
@@ -108,7 +146,10 @@ class SerialReader(QThread):
 
             while self._running and not self.isInterruptionRequested():
                 try:
-                    raw_line = port.readline()
+                    raw_line = port.read_until(
+                        expected=b"\n",
+                        size=self.MAX_LINE_BYTES,
+                    )
                 except (serial.SerialException, OSError) as exc:
                     if self._running and not self.isInterruptionRequested():
                         self.error_occurred.emit(f"Erro durante leitura serial: {exc}")
@@ -117,29 +158,27 @@ class SerialReader(QThread):
                 now = time.monotonic()
 
                 if raw_line:
-                    decoded_line = raw_line.decode(
-                        "utf-8",
-                        errors="ignore",
-                    )
-
-                    if not is_ignorable_serial_line(decoded_line):
-                        try:
+                    try:
+                        decoded_line = self._decode_line(raw_line)
+                        if not is_ignorable_serial_line(decoded_line):
                             parsed = self._parser.parse_line(
                                 decoded_line,
                                 self._session,
                             )
                             valid_total += 1
                             pending_frames.append(parsed.frame)
-                            self.frame_received.emit(parsed.frame)
-                        except FrameProtocolError as exc:
-                            invalid_count += 1
-                            invalid_total += 1
-                            last_invalid_message = str(exc)
-                        except Exception as exc:
-                            self.error_occurred.emit(
-                                "Erro inesperado ao processar linha serial: "
-                                f"{exc}"
-                            )
+                    except FrameProtocolError as exc:
+                        invalid_count += 1
+                        invalid_total += 1
+                        invalid_by_category[exc.category] = (
+                            invalid_by_category.get(exc.category, 0) + 1
+                        )
+                        last_invalid_message = str(exc)
+                    except Exception as exc:
+                        self.error_occurred.emit(
+                            "Erro inesperado ao processar linha serial: "
+                            f"{exc}"
+                        )
 
                 should_emit_batch = (
                     len(pending_frames) >= self.FRAME_BATCH_SIZE
@@ -159,9 +198,13 @@ class SerialReader(QThread):
                 ):
                     self.protocol_error.emit(
                         invalid_count,
-                        last_invalid_message,
+                        self._format_protocol_summary(
+                            invalid_by_category,
+                            last_invalid_message,
+                        ),
                     )
                     invalid_count = 0
+                    invalid_by_category.clear()
                     last_report = now
 
                 if (
@@ -188,7 +231,10 @@ class SerialReader(QThread):
             if invalid_count:
                 self.protocol_error.emit(
                     invalid_count,
-                    last_invalid_message,
+                    self._format_protocol_summary(
+                        invalid_by_category,
+                        last_invalid_message,
+                    ),
                 )
 
             self._running = False

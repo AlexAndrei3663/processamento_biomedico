@@ -70,6 +70,8 @@ def test_parser_supports_repeated_signal_types_by_channel_index():
         (f"FRAME,0,{UINT64_MAX + 1},1,2,3", "timestamp_us fora da faixa"),
         ("FRAME,0,0,nan,2,3", "NaN ou infinitos"),
         ("FRAME,0,0,inf,2,3", "NaN ou infinitos"),
+        ("FRAME,0,0,8388608,2,3", "signed 24-bit"),
+        ("FRAME,0,0,-8388609,2,3", "signed 24-bit"),
     ],
 )
 def test_parser_rejects_values_outside_contract(line, expected_message):
@@ -114,3 +116,10 @@ def test_timestamp_estimation_handles_uint32_wrap():
         origin_timestamp_us=1_000_000,
         sample_rate_hz=1000,
     ) == 1_003_000
+
+
+def test_protocol_errors_expose_diagnostic_category():
+    with pytest.raises(FrameProtocolError) as captured:
+        FrameCsvParser().parse_line("FRAME,1,1000,1,2", build_session())
+
+    assert captured.value.category == "field_count"

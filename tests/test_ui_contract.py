@@ -158,6 +158,7 @@ def test_logs_and_protocol_errors_are_graphically_throttled() -> None:
     assert "_pending_log_lines" in main_source
     assert "_flush_pending_logs" in main_source
     assert "PROTOCOL_REPORT_INTERVAL_S" in serial_source
+    assert "self.frame_received.emit" not in serial_source
     assert "self.wait(1500)" not in serial_source
     assert "def on_protocol_error(self, count: int, message: str)" in controller_source
 

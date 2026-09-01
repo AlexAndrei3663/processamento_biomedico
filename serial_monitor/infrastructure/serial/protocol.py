@@ -10,6 +10,10 @@ from serial_monitor.domain.models import ParsedFrame, SampleFrame, SessionConfig
 class FrameProtocolError(ValueError):
     """Erro de sintaxe ou domínio no protocolo serial textual."""
 
+    def __init__(self, message: str, *, category: str = "other") -> None:
+        super().__init__(message)
+        self.category = category
+
 
 def is_ignorable_serial_line(line: str) -> bool:
     """Indica linhas de diagnóstico que não pertencem ao fluxo de frames.
@@ -49,25 +53,32 @@ class FrameCsvParser:
         try:
             value = int(token)
         except ValueError as exc:
-            raise FrameProtocolError(f"{name} deve ser um número inteiro sem sinal.") from exc
+            raise FrameProtocolError(
+                f"{name} deve ser um número inteiro sem sinal.",
+                category="numeric_field",
+            ) from exc
         if not 0 <= value <= maximum:
-            raise FrameProtocolError(f"{name} fora da faixa permitida: 0 a {maximum}.")
+            raise FrameProtocolError(
+                f"{name} fora da faixa permitida: 0 a {maximum}.",
+                category="counter_range",
+            )
         return value
 
     def parse_line(self, line: str, session: SessionConfig) -> ParsedFrame:
         clean_line = line.strip()
         if not clean_line:
-            raise FrameProtocolError("Linha vazia recebida.")
+            raise FrameProtocolError("Linha vazia recebida.", category="empty_line")
 
         tokens = [token.strip() for token in clean_line.split(",")]
         expected_tokens = 3 + session.channel_count
         if len(tokens) != expected_tokens:
             raise FrameProtocolError(
-                f"Quantidade de campos inválida. Esperado {expected_tokens}, recebido {len(tokens)}."
+                f"Quantidade de campos inválida. Esperado {expected_tokens}, recebido {len(tokens)}.",
+                category="field_count",
             )
 
         if tokens[0].upper() != self.header:
-            raise FrameProtocolError("Cabeçalho FRAME ausente.")
+            raise FrameProtocolError("Cabeçalho FRAME ausente.", category="header")
 
         sequence_id = self._parse_unsigned(
             tokens[1],
@@ -83,10 +94,22 @@ class FrameCsvParser:
         try:
             values_in_order = [float(token) for token in tokens[3:]]
         except ValueError as exc:
-            raise FrameProtocolError("Valores de canal inválidos no frame.") from exc
+            raise FrameProtocolError(
+                "Valores de canal inválidos no frame.",
+                category="channel_value",
+            ) from exc
 
         if any(not math.isfinite(value) for value in values_in_order):
-            raise FrameProtocolError("Valores NaN ou infinitos não são aceitos no frame.")
+            raise FrameProtocolError(
+                "Valores NaN ou infinitos não são aceitos no frame.",
+                category="channel_value",
+            )
+
+        if any(not -8_388_608 <= value <= 8_388_607 for value in values_in_order):
+            raise FrameProtocolError(
+                "Valor de canal fora da faixa signed 24-bit do ADS1256.",
+                category="adc_range",
+            )
 
         values_by_channel_index = {
             channel.index: value
