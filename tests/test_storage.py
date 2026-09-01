@@ -160,3 +160,36 @@ def test_integrity_verification_detects_modified_dataset(tmp_path):
 
     assert repository.verify_integrity(session_id) == "failed"
     assert repository.get_summary(session_id).integrity_status == "failed"
+
+
+def test_effective_sample_rate_is_persisted_and_restored(tmp_path):
+    session = _session(window_size=10)
+    parser = FrameCsvParser()
+    recorder = RecordingService(
+        tmp_path,
+        queue_capacity=32,
+        batch_size=8,
+        flush_interval_s=0.01,
+    )
+    recorder.start(session)
+    recorder.enqueue_frame(_frame(parser, session, 1))
+    status = recorder.finalize(
+        CommunicationStats(
+            valid_frames=1,
+            estimated_sample_rate_hz=1093.5,
+            sample_rate_locked=True,
+            sample_rate_windows=2,
+            sample_rate_deviation_percent=9.35,
+        ),
+        reason="test",
+    )
+
+    assert status.output_path is not None
+    with h5py.File(status.output_path, "r") as h5:
+        assert float(h5.attrs["effective_sample_rate_hz"]) == pytest.approx(1093.5)
+        assert bool(h5.attrs["sample_rate_locked"])
+
+    stored = SessionRepository(tmp_path).load(status.session_id)
+    assert stored.summary.effective_sample_rate_hz == pytest.approx(1093.5)
+    assert stored.snapshot.communication.estimated_sample_rate_hz == pytest.approx(1093.5)
+    assert stored.session.channels[0].sample_rate_hz == pytest.approx(1093.5)

@@ -1000,6 +1000,11 @@ class MainController(QObject):
                 f"Timestamps não crescentes: {summary.timestamp_regressions}",
                 f"Canais: {summary.channel_count}",
                 f"Taxa base: {summary.base_sample_rate_hz} Hz",
+                (
+                    "Taxa efetiva: --"
+                    if summary.effective_sample_rate_hz is None
+                    else f"Taxa efetiva: {summary.effective_sample_rate_hz:.3f} Hz"
+                ),
                 "",
                 "Ordem dos canais:",
                 *(f"  - {label}" for label in summary.channel_labels),

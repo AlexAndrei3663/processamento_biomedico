@@ -285,6 +285,10 @@ class CommunicationMonitor:
     def last_timestamp_us(self) -> int | None:
         return self._timestamp_normalizer.last_normalized_timestamp_us
 
+    @property
+    def device_resets(self) -> int:
+        return self._device_resets
+
     def reset(self) -> None:
         self._sequence_tracker.reset()
         self._valid_frames = 0
@@ -355,7 +359,16 @@ class CommunicationMonitor:
         self._valid_frames += 1
         return True
 
-    def snapshot(self) -> CommunicationStats:
+    def snapshot(
+        self,
+        *,
+        estimated_sample_rate_hz: float | None = None,
+        sample_rate_locked: bool = False,
+        sample_rate_windows: int = 0,
+        sample_rate_rejected_windows: int = 0,
+        sample_rate_instability_events: int = 0,
+        sample_rate_deviation_percent: float | None = None,
+    ) -> CommunicationStats:
         return CommunicationStats(
             valid_frames=self._valid_frames,
             invalid_frames=self._invalid_frames,
@@ -363,5 +376,11 @@ class CommunicationMonitor:
             timestamp_regressions=self._timestamp_regressions,
             timestamp_wraps=self._timestamp_wraps,
             device_resets=self._device_resets,
+            estimated_sample_rate_hz=estimated_sample_rate_hz,
+            sample_rate_locked=sample_rate_locked,
+            sample_rate_windows=sample_rate_windows,
+            sample_rate_rejected_windows=sample_rate_rejected_windows,
+            sample_rate_instability_events=sample_rate_instability_events,
+            sample_rate_deviation_percent=sample_rate_deviation_percent,
             sequence=self._sequence_tracker.diagnostics.snapshot(),
         )

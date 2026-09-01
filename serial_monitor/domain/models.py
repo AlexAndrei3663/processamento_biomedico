@@ -239,6 +239,12 @@ class CommunicationStats:
     timestamp_regressions: int = 0
     timestamp_wraps: int = 0
     device_resets: int = 0
+    estimated_sample_rate_hz: float | None = None
+    sample_rate_locked: bool = False
+    sample_rate_windows: int = 0
+    sample_rate_rejected_windows: int = 0
+    sample_rate_instability_events: int = 0
+    sample_rate_deviation_percent: float | None = None
     sequence: SequenceDiagnostics = field(default_factory=SequenceDiagnostics)
 
     @property
@@ -449,6 +455,7 @@ class StoredSessionSummary:
     first_timestamp_us: int | None = None
     last_timestamp_us: int | None = None
     file_size_bytes: int = 0
+    effective_sample_rate_hz: float | None = None
 
     @property
     def time_span_seconds(self) -> float:

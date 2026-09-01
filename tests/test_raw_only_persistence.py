@@ -80,7 +80,7 @@ def test_hdf5_contains_only_raw_datasets_and_acquisition_metadata(
             "raw_values",
         }
         assert "active_filters_json" not in h5.attrs
-        assert int(h5.attrs["metadata_schema_version"]) == 3
+        assert int(h5.attrs["metadata_schema_version"]) == 4
         assert str(h5.attrs["storage_policy"]) == "raw_samples_only"
         assert not bool(h5.attrs["processing_state_persisted"])
 

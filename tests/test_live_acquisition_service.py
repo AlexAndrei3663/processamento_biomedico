@@ -163,6 +163,22 @@ def test_isolated_timestamp_rollback_is_rejected():
     assert snapshot.last_timestamp_us == 20_001_000
 
 
+def test_effective_sample_rate_updates_channel_after_stabilization():
+    session = build_session(window_size=20)
+    parser = FrameCsvParser()
+    service = LiveAcquisitionService()
+    service.configure(session)
+
+    assert service.ingest_frame(frame(parser, session, 0, 0))
+    assert service.ingest_frame(frame(parser, session, 5_500, 5_000_000))
+    assert service.ingest_frame(frame(parser, session, 11_000, 10_000_000))
+
+    snapshot = service.snapshot()
+    assert snapshot.communication.sample_rate_locked
+    assert snapshot.communication.estimated_sample_rate_hz == pytest.approx(1100.0)
+    assert snapshot.channels[0].channel.sample_rate_hz == pytest.approx(1100.0)
+
+
 def test_invalid_and_checksum_errors_are_counted_separately():
     service = LiveAcquisitionService()
     service.configure(build_session())

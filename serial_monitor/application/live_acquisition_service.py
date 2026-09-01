@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from typing import Dict
 
 from serial_monitor.application.communication_monitor import CommunicationMonitor
+from serial_monitor.application.sampling_rate_estimator import SamplingRateEstimator
 from serial_monitor.domain.models import AcquisitionSnapshot, SampleFrame, SessionConfig
 from serial_monitor.processing.ring_buffer import RingBuffer
 
@@ -21,6 +22,7 @@ class LiveAcquisitionService:
         self._buffers: Dict[int, RingBuffer] = {}
         self._running = False
         self._communication = CommunicationMonitor()
+        self._sampling_rate: SamplingRateEstimator | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -37,6 +39,7 @@ class LiveAcquisitionService:
             for channel in session.channels
         }
         self._communication.reset()
+        self._sampling_rate = SamplingRateEstimator(session.base_sample_rate_hz)
         self._running = False
 
     def start(self) -> None:
@@ -57,6 +60,8 @@ class LiveAcquisitionService:
         """Aceita o próximo frame como nova referência temporal e sequencial."""
 
         self._communication.begin_stream()
+        if self._sampling_rate is not None:
+            self._sampling_rate.reset()
 
     def clear_buffers(self, *, reset_stream_baseline: bool = False) -> None:
         """Limpa a janela móvel de visualização.
@@ -77,6 +82,8 @@ class LiveAcquisitionService:
 
         self.clear_buffers()
         self._communication.reset()
+        if self._sampling_rate is not None:
+            self._sampling_rate.reset()
 
     def record_invalid_frame(self, count: int = 1) -> None:
         self._communication.record_invalid_frame(count)
@@ -128,8 +135,22 @@ class LiveAcquisitionService:
         }
 
         for frame, channel_values in zip(frames, validated, strict=True):
+            resets_before = self._communication.device_resets
             if not self._communication.register_frame(frame):
                 continue
+            if self._sampling_rate is not None:
+                resets_after = self._communication.device_resets
+                if resets_after > resets_before:
+                    self._sampling_rate.reset_window()
+                locked_now = self._sampling_rate.observe(
+                    frame.sequence_id,
+                    frame.timestamp_us,
+                )
+                if locked_now and self._session is not None:
+                    estimate = self._sampling_rate.snapshot().estimated_hz
+                    if estimate is not None:
+                        for channel in self._session.channels:
+                            channel.sample_rate_hz = estimate
             accepted_frames.append(frame)
             timestamps_us.append(frame.timestamp_us)
             sequence_ids.append(frame.sequence_id)
@@ -151,10 +172,18 @@ class LiveAcquisitionService:
         return bool(self.ingest_frames((frame,)))
 
     def snapshot(self) -> AcquisitionSnapshot:
+        rate = self._sampling_rate.snapshot() if self._sampling_rate is not None else None
         return AcquisitionSnapshot(
             configured=self._session is not None,
             running=self._running,
-            communication=self._communication.snapshot(),
+            communication=self._communication.snapshot(
+                estimated_sample_rate_hz=(rate.estimated_hz if rate else None),
+                sample_rate_locked=(rate.locked if rate else False),
+                sample_rate_windows=(rate.completed_windows if rate else 0),
+                sample_rate_rejected_windows=(rate.rejected_windows if rate else 0),
+                sample_rate_instability_events=(rate.instability_events if rate else 0),
+                sample_rate_deviation_percent=(rate.deviation_percent if rate else None),
+            ),
             last_sequence_id=self._communication.last_sequence_id,
             last_timestamp_us=self._communication.last_timestamp_us,
             channels={index: buffer.snapshot() for index, buffer in self._buffers.items()},

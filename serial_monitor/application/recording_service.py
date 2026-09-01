@@ -318,6 +318,23 @@ class RecordingService:
                 0,
                 current.device_resets - baseline.device_resets,
             ),
+            estimated_sample_rate_hz=current.estimated_sample_rate_hz,
+            sample_rate_locked=current.sample_rate_locked,
+            sample_rate_windows=max(
+                0,
+                current.sample_rate_windows - baseline.sample_rate_windows,
+            ),
+            sample_rate_rejected_windows=max(
+                0,
+                current.sample_rate_rejected_windows
+                - baseline.sample_rate_rejected_windows,
+            ),
+            sample_rate_instability_events=max(
+                0,
+                current.sample_rate_instability_events
+                - baseline.sample_rate_instability_events,
+            ),
+            sample_rate_deviation_percent=current.sample_rate_deviation_percent,
             sequence=type(current.sequence)(
                 gap_events=max(
                     0, current.sequence.gap_events - baseline.sequence.gap_events

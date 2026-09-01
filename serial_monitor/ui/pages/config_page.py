@@ -654,6 +654,15 @@ class ConfigPage(QWidget):
             f"Timestamps não crescentes: {stats.timestamp_regressions}",
             f"Wraps de timestamp: {stats.timestamp_wraps}",
             f"Reinícios do dispositivo: {stats.device_resets}",
+            (
+                "Taxa efetiva: aguardando estimativa"
+                if stats.estimated_sample_rate_hz is None
+                else f"Taxa efetiva: {stats.estimated_sample_rate_hz:.3f} Hz"
+            ),
+            f"Taxa estabilizada: {'sim' if stats.sample_rate_locked else 'não'}",
+            f"Janelas válidas da taxa: {stats.sample_rate_windows}",
+            f"Janelas rejeitadas da taxa: {stats.sample_rate_rejected_windows}",
+            f"Mudanças posteriores da taxa: {stats.sample_rate_instability_events}",
             "",
             "Sequência dos ciclos de aquisição:",
             f"  gaps={stats.sequence.gap_events}",

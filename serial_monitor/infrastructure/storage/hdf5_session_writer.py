@@ -23,7 +23,7 @@ class Hdf5SessionWriter:
     """Escritor incremental de uma sessão sincronizada multicanal."""
 
     FORMAT_VERSION = 8
-    METADATA_SCHEMA_VERSION = 3
+    METADATA_SCHEMA_VERSION = 4
 
     def __init__(
         self,
@@ -291,6 +291,11 @@ class Hdf5SessionWriter:
             self.communication_to_dict(communication),
             ensure_ascii=False,
         )
+        if communication.estimated_sample_rate_hz is not None:
+            self._file.attrs["effective_sample_rate_hz"] = (
+                communication.estimated_sample_rate_hz
+            )
+        self._file.attrs["sample_rate_locked"] = communication.sample_rate_locked
         self._file.flush()
         self._file.close()
         self._file = None
@@ -342,6 +347,12 @@ class Hdf5SessionWriter:
             "timestamp_regressions": stats.timestamp_regressions,
             "timestamp_wraps": stats.timestamp_wraps,
             "device_resets": stats.device_resets,
+            "estimated_sample_rate_hz": stats.estimated_sample_rate_hz,
+            "sample_rate_locked": stats.sample_rate_locked,
+            "sample_rate_windows": stats.sample_rate_windows,
+            "sample_rate_rejected_windows": stats.sample_rate_rejected_windows,
+            "sample_rate_instability_events": stats.sample_rate_instability_events,
+            "sample_rate_deviation_percent": stats.sample_rate_deviation_percent,
             "sequence": {
                 "gap_events": stats.sequence.gap_events,
                 "missing_items": stats.sequence.missing_items,

@@ -467,6 +467,11 @@ class SessionRepository:
             first_timestamp_us=first_timestamp,
             last_timestamp_us=last_timestamp,
             file_size_bytes=file_size,
+            effective_sample_rate_hz=(
+                float(h5.attrs["effective_sample_rate_hz"])
+                if "effective_sample_rate_hz" in h5.attrs
+                else communication.estimated_sample_rate_hz
+            ),
         )
 
     def _unreadable_summary(self, data_path: Path, error: str) -> StoredSessionSummary:
@@ -503,6 +508,11 @@ class SessionRepository:
 
     def _session_from_file(self, h5: h5py.File) -> SessionConfig:
         channels = []
+        effective_rate = (
+            float(h5.attrs["effective_sample_rate_hz"])
+            if "effective_sample_rate_hz" in h5.attrs
+            else None
+        )
         for source in self._channels_metadata(h5):
             conversion_source = source.get("conversion", {})
             if not isinstance(conversion_source, dict):
@@ -532,7 +542,11 @@ class SessionRepository:
                     display_name=str(source["display_name"]),
                     unit=unit,
                     raw_unit=raw_unit,
-                    sample_rate_hz=float(source["sample_rate_hz"]),
+                    sample_rate_hz=(
+                        effective_rate
+                        if effective_rate is not None
+                        else float(source["sample_rate_hz"])
+                    ),
                     conversion=ConversionConfig(enabled=enabled, profile_id=profile_id),
                     conversion_profile=profile,
                     default_filters=[],
@@ -625,6 +639,24 @@ class SessionRepository:
             timestamp_regressions=int(source.get("timestamp_regressions", 0)),
             timestamp_wraps=int(source.get("timestamp_wraps", 0)),
             device_resets=int(source.get("device_resets", 0)),
+            estimated_sample_rate_hz=(
+                float(source["estimated_sample_rate_hz"])
+                if source.get("estimated_sample_rate_hz") is not None
+                else None
+            ),
+            sample_rate_locked=bool(source.get("sample_rate_locked", False)),
+            sample_rate_windows=int(source.get("sample_rate_windows", 0)),
+            sample_rate_rejected_windows=int(
+                source.get("sample_rate_rejected_windows", 0)
+            ),
+            sample_rate_instability_events=int(
+                source.get("sample_rate_instability_events", 0)
+            ),
+            sample_rate_deviation_percent=(
+                float(source["sample_rate_deviation_percent"])
+                if source.get("sample_rate_deviation_percent") is not None
+                else None
+            ),
             sequence=SequenceDiagnostics(
                 gap_events=int(sequence.get("gap_events", 0)),
                 missing_items=int(sequence.get("missing_items", 0)),
