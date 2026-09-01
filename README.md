@@ -482,6 +482,25 @@ python scripts/benchmark_recording.py \
   --output-dir data/benchmark
 ```
 
+O benchmark acima é uma referência de desenvolvimento e não aprova o hardware
+embarcado. Em cada Raspberry Pi 3B+ ou Orange Pi 3 LTS, execute o pipeline no ritmo
+real com 10% de margem sobre a taxa nominal:
+
+```bash
+python scripts/benchmark_embedded.py \
+  --duration 3600 \
+  --rate 1100 \
+  --channels 4 \
+  --report-json data/benchmark/embedded.json
+```
+
+Os limites padrão exigem pelo menos 98% da taxa solicitada, no máximo 80% de um
+núcleo, 256 MiB de memória residente, 250 ms de atraso e 80% da fila. Eles podem
+ser ajustados pelos argumentos `--minimum-rate-ratio`,
+`--max-cpu-one-core-percent`, `--max-rss-mib`, `--max-lag-ms` e
+`--max-queue-usage-percent`. A aprovação desse ensaio confirma a margem do pipeline
+sintético; o teste com USB CDC, firmware e interface aberta continua obrigatório.
+
 ## Testes
 
 ```bash
@@ -543,8 +562,8 @@ O diretório `data/` é ignorado pelo Git por padrão.
 
 - o protocolo textual atual não possui CRC;
 - os canais agrupados representam uma varredura sequencial, não amostras fisicamente simultâneas;
-- a taxa configurada ainda deve ser comparada com a taxa efetiva obtida pelos timestamps;
-- a leitura serial entrega frames ao controlador Qt por sinais; a suficiência desse modelo deve ser confirmada em ensaios prolongados;
+- a taxa efetiva é estimada pelos timestamps durante a aquisição e ainda deve ser registrada nos ensaios com o hardware;
+- a leitura serial entrega lotes de frames ao controlador Qt por sinais; a suficiência desse modelo deve ser confirmada em ensaios prolongados;
 - temperatura de CPU pode não estar disponível fora do Linux/Raspberry Pi;
 - a conversão nominal para tensão não substitui a calibração do ADC nem a caracterização do front-end analógico;
 - os ensaios sintéticos não substituem gerador de funções, osciloscópio, hardware completo ou equipamento biomédico de referência.

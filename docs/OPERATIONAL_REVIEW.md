@@ -45,7 +45,7 @@
 
 ## Pendências conscientes
 
-A leitura serial ocorre em `QThread`, mas cada frame válido é entregue ao controlador Qt por sinal. Os ensaios de taxa, fila e perdas devem confirmar se essa arquitetura é suficiente no hardware final. Caso haja crescimento contínuo da fila de eventos ou perdas em aquisição prolongada, o consumo dos frames deverá migrar para um worker dedicado independente da thread da interface.
+A leitura serial ocorre em `QThread` e entrega lotes de frames válidos ao controlador Qt. Os ensaios de taxa, fila e perdas devem confirmar se essa arquitetura é suficiente no hardware final. Caso haja crescimento contínuo da fila de eventos ou perdas em aquisição prolongada, o consumo dos lotes deverá migrar para um worker dedicado independente da thread da interface.
 
 O tratamento de erro de protocolo foi mantido porque é útil para detectar porta, protocolo e firmware incompatíveis. Se os ensaios na Raspberry Pi mostrarem custo relevante, a primeira simplificação recomendada é manter apenas contadores acumulados e a desconexão por ausência de frames válidos, eliminando a mensagem de exemplo. A remoção completa do diagnóstico só deve ser considerada se houver evidência experimental de impacto.
 
