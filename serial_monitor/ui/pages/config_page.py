@@ -652,6 +652,8 @@ class ConfigPage(QWidget):
             f"Frames inválidos: {stats.invalid_frames}",
             f"Erros de checksum: {stats.checksum_errors}",
             f"Timestamps não crescentes: {stats.timestamp_regressions}",
+            f"Wraps de timestamp: {stats.timestamp_wraps}",
+            f"Reinícios do dispositivo: {stats.device_resets}",
             "",
             "Sequência dos ciclos de aquisição:",
             f"  gaps={stats.sequence.gap_events}",

@@ -22,6 +22,14 @@ class SequenceDisposition(str, Enum):
     OUT_OF_ORDER = "out_of_order"
 
 
+class TimestampDisposition(str, Enum):
+    FIRST = "first"
+    IN_ORDER = "in_order"
+    WRAP = "wrap"
+    RESET = "reset"
+    REGRESSION = "regression"
+
+
 @dataclass(frozen=True, slots=True)
 class SequenceObservation:
     disposition: SequenceDisposition
@@ -34,6 +42,16 @@ class SequenceObservation:
             SequenceDisposition.IN_ORDER,
             SequenceDisposition.GAP,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class TimestampObservation:
+    disposition: TimestampDisposition
+    normalized_timestamp_us: int | None
+
+    @property
+    def is_acceptable(self) -> bool:
+        return self.disposition is not TimestampDisposition.REGRESSION
 
 
 @dataclass(slots=True)
@@ -106,6 +124,111 @@ class _SequenceTracker:
             self.diagnostics.out_of_order_items += 1
 
 
+class _TimestampNormalizer:
+    def __init__(self) -> None:
+        self.last_raw_timestamp_us: int | None = None
+        self.last_normalized_timestamp_us: int | None = None
+        self.last_delta_us = 1
+        self.epoch_offset_us = 0
+
+    def reset(self) -> None:
+        self.last_raw_timestamp_us = None
+        self.last_normalized_timestamp_us = None
+        self.last_delta_us = 1
+        self.epoch_offset_us = 0
+
+    def is_probable_device_reset(
+        self,
+        *,
+        raw_timestamp_us: int,
+        sequence_id: int,
+        last_sequence_id: int | None,
+        sequence_observation: SequenceObservation,
+    ) -> bool:
+        last_raw = self.last_raw_timestamp_us
+        if (
+            last_raw is None
+            or last_sequence_id is None
+            or sequence_observation.disposition is not SequenceDisposition.OUT_OF_ORDER
+            or raw_timestamp_us >= last_raw
+            or sequence_id >= last_sequence_id
+        ):
+            return False
+        timestamp_drop = last_raw - raw_timestamp_us
+        sequence_drop = last_sequence_id - sequence_id
+        return (
+            timestamp_drop >= max(1_000_000, last_raw // 2)
+            and sequence_drop >= max(100, last_sequence_id // 2)
+        )
+
+    def observe(
+        self,
+        raw_timestamp_us: int,
+        *,
+        device_reset: bool = False,
+    ) -> TimestampObservation:
+        if not 0 <= raw_timestamp_us <= UINT64_MAX:
+            raise ValueError("Timestamp fora da faixa uint64.")
+
+        last_raw = self.last_raw_timestamp_us
+        last_normalized = self.last_normalized_timestamp_us
+        if last_raw is None or last_normalized is None:
+            return self._commit(
+                raw_timestamp_us,
+                raw_timestamp_us,
+                TimestampDisposition.FIRST,
+            )
+
+        if device_reset:
+            normalized = last_normalized + max(1, self.last_delta_us)
+            self.epoch_offset_us = normalized - raw_timestamp_us
+            return self._commit(
+                raw_timestamp_us,
+                normalized,
+                TimestampDisposition.RESET,
+            )
+
+        if raw_timestamp_us > UINT32_MAX or last_raw > UINT32_MAX:
+            if raw_timestamp_us <= last_normalized:
+                return TimestampObservation(TimestampDisposition.REGRESSION, None)
+            return self._commit(
+                raw_timestamp_us,
+                raw_timestamp_us,
+                TimestampDisposition.IN_ORDER,
+            )
+
+        if raw_timestamp_us < last_raw:
+            forward_distance = (raw_timestamp_us - last_raw) % UINT32_MODULUS
+            if forward_distance >= UINT32_MODULUS // 2:
+                return TimestampObservation(TimestampDisposition.REGRESSION, None)
+            self.epoch_offset_us += UINT32_MODULUS
+            disposition = TimestampDisposition.WRAP
+        elif raw_timestamp_us == last_raw:
+            return TimestampObservation(TimestampDisposition.REGRESSION, None)
+        else:
+            disposition = TimestampDisposition.IN_ORDER
+
+        normalized = self.epoch_offset_us + raw_timestamp_us
+        if normalized <= last_normalized:
+            return TimestampObservation(TimestampDisposition.REGRESSION, None)
+        return self._commit(raw_timestamp_us, normalized, disposition)
+
+    def _commit(
+        self,
+        raw_timestamp_us: int,
+        normalized_timestamp_us: int,
+        disposition: TimestampDisposition,
+    ) -> TimestampObservation:
+        if self.last_normalized_timestamp_us is not None:
+            self.last_delta_us = max(
+                1,
+                normalized_timestamp_us - self.last_normalized_timestamp_us,
+            )
+        self.last_raw_timestamp_us = raw_timestamp_us
+        self.last_normalized_timestamp_us = normalized_timestamp_us
+        return TimestampObservation(disposition, normalized_timestamp_us)
+
+
 def sequence_forward_distance(origin: int, current: int) -> int:
     """Retorna a distância modular uint32 entre duas sequências."""
 
@@ -146,11 +269,13 @@ class CommunicationMonitor:
 
     def __init__(self) -> None:
         self._sequence_tracker = _SequenceTracker()
+        self._timestamp_normalizer = _TimestampNormalizer()
         self._valid_frames = 0
         self._invalid_frames = 0
         self._checksum_errors = 0
         self._timestamp_regressions = 0
-        self._last_timestamp_us: int | None = None
+        self._timestamp_wraps = 0
+        self._device_resets = 0
 
     @property
     def last_sequence_id(self) -> int | None:
@@ -158,7 +283,7 @@ class CommunicationMonitor:
 
     @property
     def last_timestamp_us(self) -> int | None:
-        return self._last_timestamp_us
+        return self._timestamp_normalizer.last_normalized_timestamp_us
 
     def reset(self) -> None:
         self._sequence_tracker.reset()
@@ -166,7 +291,9 @@ class CommunicationMonitor:
         self._invalid_frames = 0
         self._checksum_errors = 0
         self._timestamp_regressions = 0
-        self._last_timestamp_us = None
+        self._timestamp_wraps = 0
+        self._device_resets = 0
+        self._timestamp_normalizer.reset()
 
     def begin_stream(self) -> None:
         """Inicia uma nova continuidade serial sem apagar os diagnósticos.
@@ -178,7 +305,7 @@ class CommunicationMonitor:
         """
 
         self._sequence_tracker.reset_baseline()
-        self._last_timestamp_us = None
+        self._timestamp_normalizer.reset()
 
     def record_invalid_frame(self, count: int = 1) -> None:
         count = int(count)
@@ -197,17 +324,34 @@ class CommunicationMonitor:
         contabilizados e rejeitados. Gaps são aceitos e a quantidade ausente é estimada.
         """
 
-        observation = self._sequence_tracker.classify(frame.sequence_id)
-        if not observation.is_acceptable:
-            self._sequence_tracker.record_rejected(observation)
+        sequence_observation = self._sequence_tracker.classify(frame.sequence_id)
+        device_reset = self._timestamp_normalizer.is_probable_device_reset(
+            raw_timestamp_us=frame.timestamp_us,
+            sequence_id=frame.sequence_id,
+            last_sequence_id=self._sequence_tracker.last_value,
+            sequence_observation=sequence_observation,
+        )
+        if device_reset:
+            self._sequence_tracker.reset_baseline()
+            sequence_observation = self._sequence_tracker.classify(frame.sequence_id)
+        elif not sequence_observation.is_acceptable:
+            self._sequence_tracker.record_rejected(sequence_observation)
             return False
 
-        if self._last_timestamp_us is not None and frame.timestamp_us <= self._last_timestamp_us:
+        timestamp_observation = self._timestamp_normalizer.observe(
+            frame.timestamp_us,
+            device_reset=device_reset,
+        )
+        if not timestamp_observation.is_acceptable:
             self._timestamp_regressions += 1
             return False
 
-        self._sequence_tracker.commit_accepted(frame.sequence_id, observation)
-        self._last_timestamp_us = frame.timestamp_us
+        self._sequence_tracker.commit_accepted(frame.sequence_id, sequence_observation)
+        if timestamp_observation.disposition is TimestampDisposition.WRAP:
+            self._timestamp_wraps += 1
+        elif timestamp_observation.disposition is TimestampDisposition.RESET:
+            self._device_resets += 1
+        frame.timestamp_us = int(timestamp_observation.normalized_timestamp_us)
         self._valid_frames += 1
         return True
 
@@ -217,5 +361,7 @@ class CommunicationMonitor:
             invalid_frames=self._invalid_frames,
             checksum_errors=self._checksum_errors,
             timestamp_regressions=self._timestamp_regressions,
+            timestamp_wraps=self._timestamp_wraps,
+            device_resets=self._device_resets,
             sequence=self._sequence_tracker.diagnostics.snapshot(),
         )

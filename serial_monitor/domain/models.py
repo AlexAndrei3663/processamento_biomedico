@@ -237,6 +237,8 @@ class CommunicationStats:
     invalid_frames: int = 0
     checksum_errors: int = 0
     timestamp_regressions: int = 0
+    timestamp_wraps: int = 0
+    device_resets: int = 0
     sequence: SequenceDiagnostics = field(default_factory=SequenceDiagnostics)
 
     @property

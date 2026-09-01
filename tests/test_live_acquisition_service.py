@@ -101,6 +101,68 @@ def test_uint32_sequence_wrap_is_in_order():
     assert stats.sequence.out_of_order_items == 0
 
 
+def test_uint32_timestamp_wrap_is_normalized_to_monotonic_uint64():
+    session = build_session()
+    parser = FrameCsvParser()
+    service = LiveAcquisitionService()
+    service.configure(session)
+
+    raw_timestamps = (UINT32_MAX - 500, UINT32_MAX, 499, 1_499)
+    for sequence, timestamp_us in enumerate(raw_timestamps, start=1):
+        assert service.ingest_frame(
+            frame(parser, session, sequence, timestamp_us)
+        )
+
+    snapshot = service.snapshot()
+    assert snapshot.channels[0].timestamps_us.tolist() == [
+        UINT32_MAX - 500,
+        UINT32_MAX,
+        UINT32_MAX + 500,
+        UINT32_MAX + 1_500,
+    ]
+    assert snapshot.communication.timestamp_wraps == 1
+    assert snapshot.communication.timestamp_regressions == 0
+
+
+def test_device_reset_rebases_timestamp_without_losing_monotonicity():
+    session = build_session()
+    parser = FrameCsvParser()
+    service = LiveAcquisitionService()
+    service.configure(session)
+
+    assert service.ingest_frame(frame(parser, session, 10_000, 20_000_000))
+    assert service.ingest_frame(frame(parser, session, 10_001, 20_001_000))
+    assert service.ingest_frame(frame(parser, session, 0, 2_000_000))
+    assert service.ingest_frame(frame(parser, session, 1, 2_001_000))
+
+    snapshot = service.snapshot()
+    assert snapshot.channels[0].timestamps_us.tolist() == [
+        20_000_000,
+        20_001_000,
+        20_002_000,
+        20_003_000,
+    ]
+    assert snapshot.communication.device_resets == 1
+    assert snapshot.communication.timestamp_regressions == 0
+    assert snapshot.communication.out_of_order_frames == 0
+
+
+def test_isolated_timestamp_rollback_is_rejected():
+    session = build_session()
+    parser = FrameCsvParser()
+    service = LiveAcquisitionService()
+    service.configure(session)
+
+    assert service.ingest_frame(frame(parser, session, 1_000, 20_000_000))
+    assert not service.ingest_frame(frame(parser, session, 1_001, 19_999_000))
+    assert service.ingest_frame(frame(parser, session, 1_001, 20_001_000))
+
+    snapshot = service.snapshot()
+    assert snapshot.communication.timestamp_regressions == 1
+    assert snapshot.communication.device_resets == 0
+    assert snapshot.last_timestamp_us == 20_001_000
+
+
 def test_invalid_and_checksum_errors_are_counted_separately():
     service = LiveAcquisitionService()
     service.configure(build_session())

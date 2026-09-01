@@ -340,6 +340,8 @@ class Hdf5SessionWriter:
             "invalid_frames": stats.invalid_frames,
             "checksum_errors": stats.checksum_errors,
             "timestamp_regressions": stats.timestamp_regressions,
+            "timestamp_wraps": stats.timestamp_wraps,
+            "device_resets": stats.device_resets,
             "sequence": {
                 "gap_events": stats.sequence.gap_events,
                 "missing_items": stats.sequence.missing_items,

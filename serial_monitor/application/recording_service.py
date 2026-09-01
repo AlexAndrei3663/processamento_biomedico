@@ -310,6 +310,14 @@ class RecordingService:
                 0,
                 current.timestamp_regressions - baseline.timestamp_regressions,
             ),
+            timestamp_wraps=max(
+                0,
+                current.timestamp_wraps - baseline.timestamp_wraps,
+            ),
+            device_resets=max(
+                0,
+                current.device_resets - baseline.device_resets,
+            ),
             sequence=type(current.sequence)(
                 gap_events=max(
                     0, current.sequence.gap_events - baseline.sequence.gap_events

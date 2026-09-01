@@ -623,6 +623,8 @@ class SessionRepository:
             invalid_frames=int(source.get("invalid_frames", 0)),
             checksum_errors=int(source.get("checksum_errors", 0)),
             timestamp_regressions=int(source.get("timestamp_regressions", 0)),
+            timestamp_wraps=int(source.get("timestamp_wraps", 0)),
+            device_resets=int(source.get("device_resets", 0)),
             sequence=SequenceDiagnostics(
                 gap_events=int(sequence.get("gap_events", 0)),
                 missing_items=int(sequence.get("missing_items", 0)),
