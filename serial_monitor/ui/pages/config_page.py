@@ -34,16 +34,7 @@ class ConfigPage(QWidget):
 
     SIGNAL_TYPE_ROLE = Qt.ItemDataRole.UserRole + 1
 
-    BAUDRATE_OPTIONS = (
-        9600,
-        19200,
-        38400,
-        57600,
-        115200,
-        230400,
-        460800,
-        921600,
-    )
+    BAUDRATE_OPTIONS = (115200,)
     SAMPLE_RATE_OPTIONS = (
         10,
         25,
@@ -75,6 +66,7 @@ class ConfigPage(QWidget):
         super().__init__()
         self._channel_conversion_configs: list[dict] = []
         self._updating_conversion_editor = False
+        self._operational_profile_locked = False
 
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -319,7 +311,9 @@ class ConfigPage(QWidget):
         self._updating_conversion_editor = True
         try:
             valid = 0 <= row < self.channel_order_list.count()
-            self.channel_base_mode_selector.setEnabled(valid)
+            self.channel_base_mode_selector.setEnabled(
+                valid and not self._operational_profile_locked
+            )
             if not valid:
                 self.conversion_channel_label.setText("Nenhum canal selecionado")
                 self.channel_base_mode_selector.setCurrentIndex(0)
@@ -529,6 +523,32 @@ class ConfigPage(QWidget):
             if item.strip()
         ]
         self.set_channel_order(signal_types, preset.channel_conversions)
+
+    def set_operational_profile_locked(self, locked: bool) -> None:
+        self._operational_profile_locked = locked
+        widgets = (
+            self.baudrate_selector,
+            self.sample_rate_selector,
+            self.window_size_input,
+            self.available_signal_selector,
+            self.add_channel_button,
+            self.channel_order_list,
+            self.move_channel_up_button,
+            self.move_channel_down_button,
+            self.remove_channel_button,
+            self.clear_channels_button,
+            self.adc_reference_voltage_input,
+            self.adc_gain_selector,
+            self.preset_name_selector,
+            self.preset_selector,
+            self.save_preset_button,
+            self.load_preset_button,
+            self.delete_preset_button,
+            self.refresh_presets_button,
+        )
+        for widget in widgets:
+            widget.setEnabled(not locked)
+        self._sync_conversion_editor(self.channel_order_list.currentRow())
 
     def add_selected_channel(self) -> None:
         value = self.available_signal_selector.currentData()

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import h5py
+import pytest
 
 from serial_monitor.domain.enums import ProtocolMode, SignalType
 from serial_monitor.domain.models import (
@@ -83,6 +84,9 @@ def test_hdf5_contains_only_raw_datasets_and_acquisition_metadata(
         assert int(h5.attrs["metadata_schema_version"]) == 4
         assert str(h5.attrs["storage_policy"]) == "raw_samples_only"
         assert not bool(h5.attrs["processing_state_persisted"])
+        assert int(h5.attrs["baudrate"]) == 115200
+        assert float(h5.attrs["adc_reference_voltage_v"]) == pytest.approx(2.5)
+        assert int(h5.attrs["adc_gain"]) == 1
 
         channels = json.loads(str(h5.attrs["channels_json"]))
         assert "default_filters" not in channels[0]

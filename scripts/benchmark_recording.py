@@ -23,7 +23,7 @@ def main() -> int:
     signal_order = ",".join("outro" for _ in range(args.channels))
     session = SessionService().build_session(
         port="BENCHMARK",
-        baudrate=921600,
+        baudrate=115200,
         base_sample_rate_hz=1000,
         window_size=5000,
         signal_order_text=signal_order,

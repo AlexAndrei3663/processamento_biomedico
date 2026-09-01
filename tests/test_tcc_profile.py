@@ -12,6 +12,8 @@ from serial_monitor.domain.enums import SignalType
 def test_tcc_profile_has_fixed_four_channel_contract():
     assert TCC_PROFILE.base_sample_rate_hz == 1000
     assert TCC_PROFILE.baudrate == 115200
+    assert TCC_PROFILE.adc_reference_voltage_v == pytest.approx(2.5)
+    assert TCC_PROFILE.adc_gain == 1
     assert TCC_PROFILE.window_size == 10_000
     assert [channel.index for channel in TCC_PROFILE.channels] == [0, 1, 2, 3]
     assert [channel.signal_type for channel in TCC_PROFILE.channels] == [
@@ -34,6 +36,9 @@ def test_tcc_profile_builds_session_with_unique_display_names():
     assert session.channel_count == 4
     assert session.base_sample_rate_hz == 1000
     assert session.window_size == 10_000
+    assert session.baudrate == 115200
+    assert session.adc.reference_voltage_v == pytest.approx(2.5)
+    assert session.adc.gain == 1
     assert [channel.display_name for channel in session.channels] == [
         "ECG 1",
         "ECG 2",

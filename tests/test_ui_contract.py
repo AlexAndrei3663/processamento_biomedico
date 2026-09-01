@@ -63,6 +63,28 @@ def test_manual_protocol_test_controls_were_removed() -> None:
         assert token not in main_source
 
 
+def test_operational_baudrate_is_fixed_to_usb_cdc_nominal_value() -> None:
+    config_source = (ROOT / "serial_monitor/ui/pages/config_page.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "BAUDRATE_OPTIONS = (115200,)" in config_source
+
+
+def test_locked_operational_profile_disables_session_editors() -> None:
+    config_source = (ROOT / "serial_monitor/ui/pages/config_page.py").read_text(
+        encoding="utf-8"
+    )
+    controller_source = (ROOT / "serial_monitor/app/bootstrap.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "def set_operational_profile_locked" in config_source
+    assert "self.adc_reference_voltage_input," in config_source
+    assert "self.adc_gain_selector," in config_source
+    assert "self.window.set_operational_profile_locked" in controller_source
+
+
 def test_live_graph_layout_is_bounded_focusable_and_keeps_recording_controls() -> None:
     live_source = (ROOT / "serial_monitor/ui/pages/live_page.py").read_text(
         encoding="utf-8"

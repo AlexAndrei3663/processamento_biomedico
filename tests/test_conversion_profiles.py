@@ -197,6 +197,27 @@ def test_ads1256_differential_conversion_uses_signed_24_bit_limits() -> None:
     np.testing.assert_allclose(result.values, [-5.0, 0.0, 5.0])
 
 
+def test_ads1256_conversion_preserves_half_scale_and_pga() -> None:
+    service = SessionService()
+    session = service.build_session(
+        port="/dev/ttyUSB0",
+        baudrate=115200,
+        base_sample_rate_hz=1000,
+        window_size=1000,
+        signal_order_text="ecg",
+        channel_conversions=[{"channel_index": 0, "mode": "voltage"}],
+        adc_reference_voltage_v=2.5,
+        adc_gain=2,
+    )
+
+    result = ConversionService().convert(
+        np.asarray([-4_194_304.0, 0.0, 4_194_303.5]),
+        session.channels[0],
+    )
+
+    np.testing.assert_allclose(result.values, [-1.25, 0.0, 1.25])
+
+
 def test_invalid_global_adc_gain_is_rejected() -> None:
     service = SessionService()
     with pytest.raises(ValueError, match="ganho"):
@@ -239,4 +260,3 @@ def test_preset_persists_adc_and_channel_base_mode(tmp_path: Path) -> None:
     assert loaded.channel_conversions[1]["mode"] == "raw"
     assert loaded.adc_reference_voltage_v == pytest.approx(2.5)
     assert loaded.adc_gain == 8
-

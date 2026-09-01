@@ -260,6 +260,7 @@ class MainController(QObject):
         current_port = self.window.selected_port
         preset = self.operational_profile.to_preset(port=current_port)
         self.window.apply_preset(preset)
+        self.window.set_operational_profile_locked(self.operational_profile.locked)
         self.window.setWindowTitle(
             f"Monitor Biomédico — {self.operational_profile.name}"
         )

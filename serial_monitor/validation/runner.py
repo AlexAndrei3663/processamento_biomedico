@@ -350,7 +350,7 @@ class ValidationRunner:
         ]
         return service.build_session(
             port="SYNTHETIC",
-            baudrate=921600,
+            baudrate=115200,
             base_sample_rate_hz=cycle.base_sample_rate_hz,
             window_size=cycle.window_size,
             signal_order_text=",".join(signal.value for signal in cycle.signals),

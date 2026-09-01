@@ -47,6 +47,6 @@
 
 A leitura serial ocorre em `QThread`, mas cada frame válido é entregue ao controlador Qt por sinal. Os ensaios de taxa, fila e perdas devem confirmar se essa arquitetura é suficiente no hardware final. Caso haja crescimento contínuo da fila de eventos ou perdas em aquisição prolongada, o consumo dos frames deverá migrar para um worker dedicado independente da thread da interface.
 
-O tratamento de erro de protocolo foi mantido porque é útil para detectar baudrate e firmware incompatíveis. Se os ensaios na Raspberry Pi mostrarem custo relevante, a primeira simplificação recomendada é manter apenas contadores acumulados e a desconexão por ausência de frames válidos, eliminando a mensagem de exemplo. A remoção completa do diagnóstico só deve ser considerada se houver evidência experimental de impacto.
+O tratamento de erro de protocolo foi mantido porque é útil para detectar porta, protocolo e firmware incompatíveis. Se os ensaios na Raspberry Pi mostrarem custo relevante, a primeira simplificação recomendada é manter apenas contadores acumulados e a desconexão por ausência de frames válidos, eliminando a mensagem de exemplo. A remoção completa do diagnóstico só deve ser considerada se houver evidência experimental de impacto.
 
-O protocolo atual não inclui CRC. A adoção de integridade no enlace deve ser avaliada após medir a ocupação da UART e a margem disponível no baudrate escolhido.
+O protocolo atual não inclui CRC. A adoção de integridade no enlace deve ser avaliada após medir a vazão e a margem do USB CDC. O baudrate 115200 é nominal e não controla a velocidade física desse enlace no firmware atual.

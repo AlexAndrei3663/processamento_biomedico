@@ -198,6 +198,9 @@ class MainWindow(QMainWindow):
     def apply_preset(self, preset: SessionPreset) -> None:
         self.config_page.apply_preset(preset)
 
+    def set_operational_profile_locked(self, locked: bool) -> None:
+        self.config_page.set_operational_profile_locked(locked)
+
     def keyPressEvent(self, a0: QKeyEvent | None) -> None:  # noqa: N802 - método Qt
         if a0:
             if a0.key() == Qt.Key.Key_F11:
@@ -276,4 +279,3 @@ class MainWindow(QMainWindow):
     @property
     def adc_gain(self) -> int:
         return self.config_page.adc_gain
-

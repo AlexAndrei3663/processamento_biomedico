@@ -237,8 +237,8 @@ python main.py
 ```bash
 python main.py \
   --fullscreen \
-  --update-interval-ms 150 \
-  --max-plot-points 3000
+  --update-interval-ms 250 \
+  --max-plot-points 2000
 ```
 
 Ou:
@@ -268,13 +268,20 @@ Exemplo completo:
 python main.py \
   --fullscreen \
   --data-dir data \
-  --update-interval-ms 150 \
-  --max-plot-points 3000 \
+  --update-interval-ms 250 \
+  --max-plot-points 2000 \
   --recording-queue-capacity 8192 \
-  --recording-batch-size 256 \
-  --recording-flush-interval-ms 1000 \
+  --recording-batch-size 512 \
+  --recording-flush-interval-ms 2000 \
+  --operational-update-interval-ms 2000 \
   --minimum-free-disk-mb 256
 ```
+
+### Contrato USB CDC
+
+O perfil operacional usa `115200` como baudrate nominal em todos os caminhos do software. A BlackPill transmite por USB CDC, e o firmware parceiro não usa a configuração de line coding para determinar a velocidade física do enlace. O valor unificado evita divergências entre interface, perfil, scripts, testes e metadados; selecionar um número maior não aumenta a vazão física do USB.
+
+O perfil TCC é a fonte autoritativa da sessão: quatro canais, taxa nominal de 1000 Hz, VREF de 2,5 V e PGA 1. A porta serial permanece selecionável em tempo de execução.
 
 ## Utilização da interface
 
@@ -283,17 +290,14 @@ python main.py \
 Na página **Configuração**:
 
 1. atualize a lista de portas seriais;
-2. confirme a porta e o baudrate;
-3. selecione a taxa base e o tamanho da janela;
-4. informe a tensão de referência do ADS1256 e selecione o ganho global do PGA;
-5. escolha um tipo de sinal e pressione **Adicionar canal**;
-6. organize a ordem usando **Subir**, **Descer** e **Remover**;
-7. para cada canal, selecione **Contagem bruta** ou **Tensão diferencial na entrada do ADC**;
-8. ajuste o intervalo de atualização da tela;
-9. valide a sessão;
-10. salve um preset quando desejar reutilizar a configuração.
+2. selecione a porta serial;
+3. confira os parâmetros fixos do perfil TCC exibidos na tela;
+4. ajuste o intervalo de atualização da tela conforme o hardware;
+5. valide a sessão.
 
-A ordem exibida na lista determina a ordem esperada dos valores no frame serial.
+Enquanto o perfil TCC estiver bloqueado, baudrate nominal, taxa base, janela, VREF,
+PGA, canais e modos de conversão são somente leitura. A ordem exibida determina a
+ordem esperada dos valores no frame serial.
 
 ### 2. Conectar e visualizar
 
@@ -342,7 +346,7 @@ O microcontrolador transmite a contagem assinada de 24 bits produzida pelo ADC. 
 - **Contagem bruta:** unidade `count`;
 - **Tensão diferencial na entrada do ADC:** unidade `V`.
 
-O ADS1256 é considerado no modo diferencial, de modo que a tensão corresponde a `AINP − AINN`. A tensão de referência e o ganho do PGA são globais para todos os canais e devem coincidir com a configuração física e com o firmware. Ganhos aceitos: `1`, `2`, `4`, `8`, `16`, `32` e `64`.
+O ADS1256 é considerado no modo diferencial, de modo que a tensão corresponde a `AINP − AINN`. A tensão de referência e o ganho do PGA são globais para todos os canais e devem coincidir com a configuração física e com o firmware. No perfil TCC vigente, VREF é 2,5 V e o PGA é 1. Ganhos aceitos pelo modelo geral: `1`, `2`, `4`, `8`, `16`, `32` e `64`.
 
 A faixa nominal é:
 
@@ -363,6 +367,8 @@ A tela ao vivo não apresenta um modo independente chamado “convertido”. Ela
 - **Processado:** o mesmo sinal base após os filtros ativos.
 
 A tensão calculada é a tensão diferencial na entrada do ADS1256. Ela não recompõe automaticamente a tensão original nos eletrodos ou no sensor, pois o front-end analógico pode aplicar ganho, offset e filtragem.
+
+Antes de uma aquisição quantitativa, confirme por medição a tensão entre `VREFP` e `VREFN` e registre o valor usado. Para VREF de 2,5 V e PGA 1, os códigos `-8_388_608`, `0` e `8_388_607` correspondem nominalmente a `-5 V`, `0 V` e `+5 V`. Essa é a faixa diferencial; cada entrada também deve respeitar seus limites absolutos em relação a `AGND` e `AVDD`.
 
 O arquivo `config/conversion_profiles.json` é mantido apenas para ensaios automatizados e compatibilidade com sessões antigas que usavam perfis genéricos. Ele não é necessário para a conversão ADS1256 da interface atual.
 

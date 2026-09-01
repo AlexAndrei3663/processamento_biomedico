@@ -11,7 +11,7 @@ A implementação foi organizada para:
 - operar em Raspberry Pi com tela sensível ao toque de 7 polegadas;
 - detectar perdas, duplicações, reordenação e regressões temporais;
 - suportar sessões longas sem carregá-las integralmente em memória;
-- manter a interface responsiva mesmo diante de baudrate ou protocolo incompatível.
+- manter a interface responsiva mesmo diante de porta, protocolo ou firmware incompatível.
 
 ## Pipeline principal
 
@@ -72,7 +72,7 @@ FRAME,<sequence_id>,<timestamp_us>,<v0>,...,<vN>
 
 O leitor mantém estados visuais de conexão, conexão em andamento e desconexão em andamento. A solicitação de parada não bloqueia a thread da interface: tenta cancelar a leitura da porta e depende de um timeout curto como alternativa.
 
-Erros de protocolo são contabilizados no leitor, mas chegam à GUI de forma agregada, no máximo uma vez por segundo. Quando nenhum frame válido é reconhecido após um período de tolerância e uma quantidade mínima de erros, a conexão é encerrada com orientação para verificar porta, baudrate e firmware.
+Erros de protocolo são contabilizados no leitor, mas chegam à GUI de forma agregada, no máximo uma vez por segundo. Quando nenhum frame válido é reconhecido após um período de tolerância e uma quantidade mínima de erros, a conexão é encerrada com orientação para verificar porta e firmware. O baudrate nominal é fixado em 115200 por consistência; no USB CDC atual ele não determina a velocidade física do enlace.
 
 Uma nova validação de configuração sempre solicita primeiro a desconexão da serial. A configuração só é reconstruída após o sinal de encerramento da conexão.
 
